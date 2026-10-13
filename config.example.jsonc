@@ -1,0 +1,108 @@
+// opspulse configuration. Copy to config.json (comments are allowed there too) and edit.
+// Every setting has a default; delete what you don't need. Full reference: README.md.
+//
+// Token / email / proxy values are references:
+//   "keyvault:NAME"  secret NAME from the Azure Key Vault below   (recommended at work)
+//   "env:VAR"        environment variable, also read from a .env file next to this one
+//   "file:path"      contents of a file
+//   anything else    used literally (fine for an email, never for a token)
+{
+  "server": {
+    "port": 4777,
+    "openBrowser": true,
+    "refreshMinutes": 10
+  },
+
+  // ---------------------------------------------------------------------------
+  // Network: one proxy per platform, empty = direct. Node does not read HTTPS_PROXY
+  // on its own, so set them here. user:pass@ in the URL is supported; keep the
+  // credentials in .env ("env:HTTPS_PROXY") rather than in this file.
+  "network": {
+    "proxies": {
+      "github": "",
+      "sonar": "env:OPSPULSE_PROXY_SONAR",   // e.g. http://proxy.corp.example:8080
+      "jira": "",
+      "azure": ""                            // cannot be a keyvault: ref (needed to reach the vault)
+    },
+    // PEM bundle to trust in addition to the system roots (TLS-inspecting proxies).
+    // Node's NODE_EXTRA_CA_CERTS environment variable works as well.
+    "caFile": "",
+    "timeoutSeconds": 30
+  },
+
+  // ---------------------------------------------------------------------------
+  // Secrets: where "keyvault:NAME" references are read from.
+  // Default secret names used below: github-token, sonar-token, jira-token.
+  // Values are kept in memory only and re-read from the vault every cacheMinutes.
+  "secrets": {
+    "azureKeyVault": {
+      "vaultUrl": "https://your-vault.vault.azure.net",
+      // auto    try the Azure CLI's session (az login) first, else browser sign-in
+      // cli     Azure CLI only (silent; needs `az` installed and logged in)
+      // browser company SSO in your browser (needs tenantId + clientId)
+      // device  type a code at microsoft.com/devicelogin (needs tenantId + clientId)
+      "auth": "auto",
+      "tenantId": "",   // your Entra tenant ID (GUID or verified domain)
+      "clientId": "",   // a public-client app registration, see README "Azure sign-in"
+      "cacheMinutes": 60
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  "github": {
+    "apiUrl": "https://api.github.com",
+    "token": "keyvault:github-token",   // or "env:OPSPULSE_GITHUB_TOKEN"
+
+    "actions": {
+      "repos": [
+        {
+          "repo": "your-org/sonar-permission-jobs",
+          "label": "Permission jobs",
+          "workflows": ["*"],
+          // warn when a scheduled workflow silently stops running
+          "expectEveryHours": { "Nightly permission audit": 26 }
+        },
+        {
+          "repo": "your-org/sonar-access-requests",
+          "label": "Access requests",
+          "workflows": ["process-request.yml", "revoke-expired.yml"],
+          "branch": "main"
+        }
+      ],
+      "lookbackHours": 168,
+      "feedWindowHours": 24,
+      "failureWarn": 1,
+      "failureCritical": 3
+    },
+
+    "dismissals": {
+      "orgs": ["your-org"],
+      "lookbackDays": 30,
+      "tools": ["code-scanning", "secret-scanning", "dependabot"],
+      "feed": false
+    }
+  },
+
+  "sonar": {
+    "url": "https://sonarcloud.io",     // US region: https://sonarqube.us
+    "token": "keyvault:sonar-token",    // or "env:OPSPULSE_SONAR_TOKEN"
+    "organizations": ["your-org"],
+    "staleDays": 30,
+    "tokenExpiryWarnDays": 14
+  },
+
+  "jira": {
+    "deployment": "cloud",              // cloud | datacenter
+    "baseUrl": "https://your-company.atlassian.net",
+    "email": "you@your-company.com",    // Cloud only; or "keyvault:jira-email"
+    "token": "keyvault:jira-token",     // or "env:OPSPULSE_JIRA_TOKEN"
+    "jql": "project = ITRK AND (statusCategory != Done OR resolved >= -30d) ORDER BY created DESC",
+    "lookbackDays": 30,
+    "staleDays": 7,
+    "newWindowHours": 24,
+    "statusRules": [
+      { "status": "Blocked", "olderThanDays": 3, "level": "warn" },
+      { "status": "Triage", "olderThanHours": 48, "level": "warn" }
+    ]
+  }
+}

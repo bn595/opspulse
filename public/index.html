@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>opspulse</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="theme.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <div class="brand">
+        <img src="favicon.svg" alt="" width="22" height="22">
+        <span>opspulse</span>
+        <span id="demo-tag" class="tag" hidden>demo data</span>
+      </div>
+      <div id="sources" class="sources" aria-label="Data sources"></div>
+      <div class="top-actions">
+        <span id="updated" class="muted small"></span>
+        <button id="refresh" class="btn" type="button">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Refresh</span>
+        </button>
+        <button id="theme" class="btn icon" type="button" aria-label="Toggle theme" title="Toggle theme">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 0 0 13z" fill="currentColor"/><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="setup"></div>
+
+    <section class="attention" aria-labelledby="att-h">
+      <div class="section-head">
+        <h2 id="att-h">Needs attention</h2>
+        <span id="feed-summary" class="muted small"></span>
+      </div>
+      <div id="feed" class="feed"></div>
+    </section>
+
+    <section id="kpis" class="kpis" aria-label="Key numbers"></section>
+
+    <section id="sec-actions" class="card" aria-labelledby="act-h">
+      <div class="section-head">
+        <h2 id="act-h">Pipelines</h2>
+        <div class="seg" id="win" role="group" aria-label="Time window"></div>
+      </div>
+      <div id="actions-body"></div>
+    </section>
+
+    <section id="sec-jira" class="card" aria-labelledby="jira-h">
+      <div class="section-head">
+        <h2 id="jira-h">Ticket backlog</h2>
+        <a id="jira-open" class="muted small link" target="_blank" rel="noopener" hidden>Open in Jira ↗</a>
+      </div>
+      <div id="jira-body"></div>
+    </section>
+
+    <section id="sec-ghas" class="card" aria-labelledby="ghas-h">
+      <div class="section-head">
+        <h2 id="ghas-h">GHAS dismissals</h2>
+        <div class="seg" id="ghas-win" role="group" aria-label="Dismissal window"></div>
+      </div>
+      <div id="ghas-body"></div>
+    </section>
+
+    <section id="sec-sonar" class="card" aria-labelledby="sonar-h">
+      <div class="section-head">
+        <h2 id="sonar-h">SonarQube Cloud</h2>
+        <a id="sonar-open" class="muted small link" target="_blank" rel="noopener" hidden>Open ↗</a>
+      </div>
+      <div id="sonar-body"></div>
+    </section>
+
+    <footer id="footer" class="footer muted small"></footer>
+  </main>
+
+  <div id="tip" class="tip" role="tooltip" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
