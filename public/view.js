@@ -78,5 +78,12 @@
     return [columns.map((c) => csvCell(c[0])).join(','), ...rows.map((r) => columns.map((c) => csvCell(c[1](r))).join(','))].join('\r\n');
   }
 
-  return { filterItems, breakdown, encodeState, decodeState, toCsv };
+  // Display order of panels. layout: { panels: [id] listed first, hide: [id] removed }.
+  function panelOrder(available, layout) {
+    const hide = new Set(layout?.hide || []);
+    const listed = (layout?.panels || []).filter((id, i, a) => available.includes(id) && a.indexOf(id) === i);
+    return [...listed, ...available.filter((id) => !listed.includes(id))].filter((id) => !hide.has(id));
+  }
+
+  return { filterItems, breakdown, encodeState, decodeState, toCsv, panelOrder };
 });

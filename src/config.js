@@ -11,6 +11,7 @@ const path = require('path');
 
 const DEFAULTS = {
   server: { host: '127.0.0.1', port: 4777, openBrowser: true, refreshMinutes: 10 },
+  ui: { panels: [], hide: [] }, // panel ids: feed, kpis, actions, jira, ghas, sonar, or a plugin id
   network: {
     // Proxy URL per platform; empty means direct. Accepts secret references.
     proxies: { github: '', sonar: '', jira: '', azure: '' },
@@ -164,6 +165,7 @@ function publicView(cfg, secretStatus) {
     configFile: cfg._file,
     configExists: cfg._exists,
     refreshMinutes: cfg.server.refreshMinutes,
+    ui: cfg.ui,
     network: { proxies: secretStatus.proxyHosts || {}, caFile: !!cfg.network.caFile },
     actions: { enabled: cfg.github.actions.enabled, repos: cfg.github.actions.repos.map((r) => r.repo), lookbackHours: cfg.github.actions.lookbackHours, feedWindowHours: cfg.github.actions.feedWindowHours, tokenSet: s.github === 'ok' },
     dismissals: { enabled: cfg.github.dismissals.enabled, orgs: cfg.github.dismissals.orgs, lookbackDays: cfg.github.dismissals.lookbackDays, tokenSet: s.github === 'ok' },

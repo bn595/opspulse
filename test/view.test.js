@@ -54,3 +54,15 @@ test('toCsv quotes when needed and neutralises spreadsheet formulas in text', ()
   const csv = view.toCsv([['Value', (r) => r]], ['=HYPERLINK("x")', '-5 items', -5, 42, 'a,b', 'say "hi"', null]);
   assert.equal(csv, ['Value', `"'=HYPERLINK(""x"")"`, "'-5 items", '-5', '42', '"a,b"', '"say ""hi"""', ''].join('\r\n'));
 });
+
+test('panelOrder puts configured panels first, keeps the rest in default order, and drops hidden ones', () => {
+  const available = ['feed', 'kpis', 'actions', 'jira', 'ghas', 'sonar', 'runs-by-actor'];
+  assert.deepEqual(
+    view.panelOrder(available, { panels: ['ghas', 'unknown', 'feed'], hide: ['sonar'] }),
+    ['ghas', 'feed', 'kpis', 'actions', 'jira', 'runs-by-actor'],
+  );
+});
+
+test('panelOrder without configuration keeps the default order', () => {
+  assert.deepEqual(view.panelOrder(['feed', 'jira'], undefined), ['feed', 'jira']);
+});

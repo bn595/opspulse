@@ -265,7 +265,7 @@ document.addEventListener('click', (e) => {
   }
 });
 document.addEventListener('keydown', (e) => {
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[data-facet][role="button"]')) { e.preventDefault(); e.target.click(); }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[data-facet][role="button"], [data-goto][role="button"]')) { e.preventDefault(); e.target.click(); }
 });
 document.addEventListener('input', (e) => {
   const panel = e.target.dataset?.search;
@@ -290,14 +290,15 @@ function sourceState(key) {
 
 function renderShell() {
   $('#demo-tag').hidden = !snap.demo;
-  const names = { actions: 'Actions', jira: 'Jira', dismissals: 'GHAS', sonar: 'Sonar' };
+  const chipFor = [['actions', 'actions', 'Actions'], ['jira', 'jira', 'Jira'], ['dismissals', 'ghas', 'GHAS'], ['sonar', 'sonar', 'Sonar'],
+    ...Object.keys(snap.sources).filter((k) => k.startsWith('plugin:')).map((k) => [k, k.slice(7), snap.sources[k].title || k.slice(7)])];
   const a = snap.auth || {};
-  let chips = Object.entries(names)
-    .map(([k, n]) => { const st = sourceState(k); return st ? `<span class="chip" data-tip="${esc(`<b>${n}</b><br>${esc(st.text)}`)}"><i class="dot ${st.cls}"></i>${n}</span>` : ''; })
+  let chips = chipFor
+    .map(([k, panel, n]) => { const st = sourceState(k); return st ? `<button type="button" class="chip" data-goto="${esc(panel)}" data-tip="${esc(`<b>${esc(n)}</b><br>${esc(st.text)}`)}"><i class="dot ${st.cls}"></i>${esc(n)}</button>` : ''; })
     .join('');
   if (a.enabled) {
     const st = a.signedIn ? { cls: 'ok', text: `signed in as ${a.user || 'unknown'} via ${a.method}` } : a.device ? { cls: 'busy', text: 'waiting for device sign-in' } : a.needsLogin ? { cls: 'stale', text: 'sign-in required' } : a.error ? { cls: 'err', text: a.error } : { cls: '', text: 'not connected yet' };
-    chips += `<span class="chip" data-tip="${esc(`<b>Key Vault · ${esc(a.vault)}</b><br>${esc(st.text)}`)}"><i class="dot ${st.cls}"></i>Key Vault</span>`;
+    chips += `<button type="button" class="chip" data-goto="top" data-tip="${esc(`<b>Key Vault · ${esc(a.vault)}</b><br>${esc(st.text)}`)}"><i class="dot ${st.cls}"></i>Key Vault</button>`;
   }
   $('#sources').innerHTML = chips;
   $('#updated').textContent = snap.lastRefreshAt ? `Updated ${rel(snap.lastRefreshAt)}` : 'Loading…';
@@ -416,34 +417,56 @@ function renderKpis() {
   const a = actionsStats(ui.win);
   if (a) {
     const pct = a.runs ? Math.round((a.fails / a.runs) * 100) : 0;
-    tiles.push(kpi(`Job runs · ${winLabel(ui.win)}`, fmt.format(a.runs), a.fails ? `<span class="bad">${plural(a.fails, 'failure')}</span> · ${pct}% of runs` : 'no failures'));
-    tiles.push(kpi('Workflows failing', `${a.failing}<small> / ${a.total}</small>`, a.failing ? 'latest run failed' : a.late ? `<span class="bad" style="color:var(--warn-ink)">${a.late} overdue</span>` : `all passing${a.running ? ` · ${a.running} running` : ''}`));
+    tiles.push(kpi(`Job runs · ${winLabel(ui.win)}`, fmt.format(a.runs), a.fails ? `<span class="bad">${plural(a.fails, 'failure')}</span> · ${pct}% of runs` : 'no failures', 'actions'));
+    tiles.push(kpi('Workflows failing', `${a.failing}<small> / ${a.total}</small>`, a.failing ? 'latest run failed' : a.late ? `<span class="bad" style="color:var(--warn-ink)">${a.late} overdue</span>` : `all passing${a.running ? ` · ${a.running} running` : ''}`, 'actions'));
   }
   const j = snap.sources.jira?.data;
   if (j) {
     const open = j.issues.filter((i) => i.category !== 'done');
     const wk = j.issues.filter((i) => now - Date.parse(i.created) <= 7 * D).length;
     const un = open.filter((i) => !i.assignee).length;
-    tiles.push(kpi('Open tickets', fmt.format(open.length), `+${wk} new in 7d${un ? ` · <span class="bad">${un} unassigned</span>` : ''}`));
+    tiles.push(kpi('Open tickets', fmt.format(open.length), `+${wk} new in 7d${un ? ` · <span class="bad kpi-link" data-panel="jira" data-facet="assignee" data-key="Unassigned" data-set="1" data-tip="Show unassigned tickets">${un} unassigned</span>` : ''}`, 'jira'));
   }
   const g = snap.sources.dismissals?.data;
   if (g) {
     const n = g.orgs.reduce((s, o) => s + o.items.filter((i) => now - Date.parse(i.at) <= ui.ghasWin * D).length, 0);
-    tiles.push(kpi(`GHAS dismissals · ${ui.ghasWin}d`, fmt.format(n), `across ${plural(g.orgs.length, 'org')}`));
+    tiles.push(kpi(`GHAS dismissals · ${ui.ghasWin}d`, fmt.format(n), `across ${plural(g.orgs.length, 'org')}`, 'ghas'));
   }
   const s = snap.sources.sonar?.data;
   if (s) {
     const sum = (k) => s.orgs.reduce((t, o) => t + (o[k]?.v || 0), 0);
-    tiles.push(kpi('Sonar projects', fmt.format(sum('projects')), `${fmt.format(sum('stale'))} not analyzed in ${s.staleDays}d`));
+    tiles.push(kpi('Sonar projects', fmt.format(sum('projects')), `${fmt.format(sum('stale'))} not analyzed in ${s.staleDays}d`, 'sonar'));
   }
   for (const [k, src] of Object.entries(snap.sources)) {
     if (!k.startsWith('plugin:') || !src.data) continue;
-    for (const m of src.data.metrics.filter((x) => x.kpi)) tiles.push(kpi(m.label, typeof m.value === 'number' ? fmt.format(m.value) : esc(m.value), esc(m.hint || src.title || '')));
+    for (const m of src.data.metrics.filter((x) => x.kpi)) tiles.push(kpi(m.label, typeof m.value === 'number' ? fmt.format(m.value) : esc(m.value), esc(m.hint || src.title || ''), k.slice(7)));
   }
   $('#kpis').innerHTML = tiles.join('');
   $('#kpis').hidden = !tiles.length;
 }
-const kpi = (label, val, sub) => `<div class="kpi"><div class="k-label">${esc(label)}</div><div class="k-val">${val}</div><div class="k-sub">${sub}</div></div>`;
+const kpi = (label, val, sub, panel) => `<div class="kpi"${panel ? ` data-goto="${esc(panel)}" role="button" tabindex="0"` : ''}><div class="k-label">${esc(label)}</div><div class="k-val">${val}</div><div class="k-sub">${sub}</div></div>`;
+
+function goTo(panel) {
+  const el = panel === 'top' ? document.body : document.querySelector(`[data-panel-id="${CSS.escape(panel)}"]`);
+  if (!el) return;
+  if (panel !== 'top') { ui.focus = panel; writeHash(); }
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+document.addEventListener('click', (e) => {
+  const g = e.target.closest('[data-goto]');
+  if (g) goTo(g.dataset.goto);
+});
+
+// Panel order and visibility from config `ui`; uses CSS order so panels are not re-rendered.
+function applyLayout() {
+  const secs = [...document.querySelectorAll('main > [data-panel-id]')];
+  const order = OpsView.panelOrder(secs.map((s) => s.dataset.panelId), snap.config.ui);
+  for (const s of secs) {
+    const i = order.indexOf(s.dataset.panelId);
+    s.style.order = i;
+    s.classList.toggle('layout-hidden', i < 0);
+  }
+}
 
 function sectionGuard(key, secId, bodyId) {
   const s = snap.sources[key];
@@ -877,6 +900,7 @@ function renderAll() {
   renderGhas();
   renderSonar();
   renderPlugins();
+  applyLayout();
   if (!scrolledToFocus && ui.focus && snap.lastRefreshAt) {
     scrolledToFocus = true;
     const sec = document.querySelector(`[data-panel-id="${CSS.escape(ui.focus)}"]`);

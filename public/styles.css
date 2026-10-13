@@ -68,6 +68,8 @@ h3 { font-size: 12px; font-weight: 600; margin: 0 0 10px; color: var(--text-2); 
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; letter-spacing: -.01em; }
 .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 99px; background: var(--info-bg); color: var(--accent-ink); }
 .sources { display: flex; gap: 6px; flex: 1; flex-wrap: wrap; justify-content: center; }
+button.chip { font: inherit; font-size: 12px; cursor: pointer; }
+button.chip:hover { border-color: var(--accent); color: var(--text); }
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 9px 3px 7px; border: 1px solid var(--border); border-radius: 99px; background: var(--card); color: var(--text-2); white-space: nowrap; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--neutral); flex: none; }
 .dot.ok { background: var(--good); } .dot.err { background: var(--critical); } .dot.busy { background: var(--accent); animation: pulse 1s infinite alternate; } .dot.stale { background: var(--warn); }
@@ -113,7 +115,14 @@ main { padding-top: 20px; padding-bottom: 40px; display: flex; flex-direction: c
 .feed-item.is-muted { border-left-color: var(--neutral); opacity: .75; }
 
 /* KPI tiles */
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.kpi[data-goto] { cursor: pointer; }
+.kpi[data-goto]:hover { border-color: var(--accent); }
+.kpi-link { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+#setup { order: -1; }
+#footer { order: 1000; }
+.layout-hidden { display: none !important; }
+main > [data-panel-id] { scroll-margin-top: 68px; }
 .kpi { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
 .kpi .k-label { font-size: 12px; color: var(--text-2); }
 .kpi .k-val { font-size: 28px; font-weight: 650; letter-spacing: -.02em; margin: 2px 0 2px; font-variant-numeric: tabular-nums; }
