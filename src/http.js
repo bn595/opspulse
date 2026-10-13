@@ -1,10 +1,7 @@
 'use strict';
-// HTTP client built on node:http/https. Node's built-in fetch ignores proxies, so this module
-// owns the sockets: per-platform HTTPS proxies (CONNECT tunnels), an optional extra CA for
-// TLS-inspecting corporate proxies, timeouts, retry on 429/5xx (and 403 + Retry-After, which is how
-// GitHub signals secondary rate limits), readable errors, and Link-header pagination.
-//
-// Every call names a `platform` ('github' | 'sonar' | 'jira' | 'azure') so the right proxy is used.
+// HTTP client on node:http/https (Node's fetch does not support proxies). Provides per-platform
+// proxies, an optional extra CA, timeouts, retries on 429/5xx and rate-limit 403s, descriptive
+// errors and Link-header pagination. Each request names a `platform` to select its proxy.
 
 const http = require('http');
 const https = require('https');
@@ -24,11 +21,11 @@ class ApiError extends Error {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Called once at startup and again when the config file changes.
+// Applies network settings. Called at startup and on config reload.
 function configure(network = {}) {
   net = { proxies: network.proxies || {}, timeoutMs: (network.timeoutSeconds || 30) * 1000, ca: undefined };
   if (network.caFile) {
-    // Setting `ca` replaces Node's bundled roots, so append rather than replace.
+    // `ca` replaces the bundled roots, so append to them.
     net.ca = [...tls.rootCertificates, fs.readFileSync(network.caFile, 'utf8')];
   }
   for (const a of agents.values()) a.destroy();
@@ -41,7 +38,7 @@ function proxyAuth(p) {
   return { 'Proxy-Authorization': 'Basic ' + Buffer.from(cred).toString('base64') };
 }
 
-// An https.Agent whose sockets are opened through an HTTP(S) proxy with CONNECT.
+// https.Agent that tunnels through an HTTP(S) proxy via CONNECT.
 class TunnelAgent extends https.Agent {
   constructor(proxyUrl, ca) {
     super({ keepAlive: true, ca });
@@ -91,7 +88,7 @@ function rawRequest(url, { method, headers, body, platform, timeoutMs }) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const isHttps = u.protocol === 'https:';
-    // Plain-http targets (e.g. an http:// GHES) go through the proxy as a classic forward request.
+    // Plain-HTTP targets are forward-proxied rather than tunnelled.
     const fwd = !isHttps && net.proxies[platform] ? new URL(net.proxies[platform]) : null;
     const opts = fwd
       ? { host: fwd.hostname, port: fwd.port || (fwd.protocol === 'https:' ? 443 : 80), path: u.href, method, headers: { ...headers, Host: u.host, ...proxyAuth(fwd) }, agent: false, ca: net.ca }
@@ -139,8 +136,8 @@ function describeNetError(e, url, timeoutMs) {
 }
 
 // request(url, opts) -> { status, data, headers }
-//   opts: method, headers, body (object => JSON, string => as-is), platform, timeoutMs, retries,
-//         throwOnError (default true: non-2xx becomes an ApiError with a readable message)
+//   opts: method, headers, body (object is sent as JSON), platform, timeoutMs, retries,
+//         throwOnError (default true; non-2xx throws ApiError)
 async function request(url, { method = 'GET', headers = {}, body, platform = 'default', timeoutMs = net.timeoutMs, retries = 2, throwOnError = true } = {}) {
   const h = { 'User-Agent': UA, Accept: 'application/json', ...headers };
   let payload;

@@ -1,5 +1,5 @@
 'use strict';
-// GitHub Advanced Security: alert dismissals (code scanning, secret scanning, Dependabot) per org.
+// GitHub Advanced Security alert dismissals per organization.
 
 const { nextLink } = require('../http');
 const { gh } = require('./actions');
@@ -57,8 +57,7 @@ async function fetchTool(api, org, tool, dc, sinceMs) {
     const items = Array.isArray(res.data) ? res.data : [];
     let olderSeen = false;
     for (const a of items) {
-      // Results are sorted by updated desc; a dismissal bumps updated_at, so once updated_at
-      // falls before the window nothing further down can have been dismissed inside it.
+      // Sorted by updated_at desc, and dismissing an alert updates it, so stop at the window edge.
       if (Date.parse(a.updated_at) < sinceMs) { olderSeen = true; break; }
       if (tool === 'secret-scanning' && !dc.secretResolutions.includes(a.resolution)) continue;
       const d = def.map(a);

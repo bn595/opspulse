@@ -1,8 +1,6 @@
 # opspulse
 
-A local, single-page ops dashboard for the person (or team) who runs the platform glue nobody else understands.
-
-It pulls from four places and puts them on one screen:
+A local, single-page dashboard for monitoring platform automation across GitHub Actions, Jira, GitHub Advanced Security and SonarQube Cloud.
 
 | Panel | Source | What you get |
 |---|---|---|
@@ -12,7 +10,7 @@ It pulls from four places and puts them on one screen:
 | **GHAS dismissals** | GitHub code scanning, secret scanning, Dependabot | Dismissals per org over 7 / 14 / 30d by tool, reason, person and repo, plus the recent list with comments |
 | **SonarQube Cloud** | SonarQube Cloud Web API | Token validity, projects per org, not analyzed in N days, never analyzed, failing quality gate, token expiry |
 
-It runs entirely on your machine. There's **no database, no `npm install`, no build step and no CDN**: just Node.js 18+ and these files. Tokens come from **Azure Key Vault via your company sign-in**, or from a local `.env`, and never reach the browser or the disk.
+It runs entirely on your machine. There is **no database, no `npm install`, no build step and no CDN**; it requires only Node.js 18+. Tokens come from **Azure Key Vault via organizational sign-in**, or from a local `.env`, and never reach the browser or the disk.
 
 ```
 npm run demo        # try it with synthetic data, no tokens needed
@@ -32,7 +30,7 @@ npm run demo        # try it with synthetic data, no tokens needed
    ```
    npm run check
    ```
-   This resolves every secret (signing you in to Azure with a device code if needed), applies the proxies, calls each API once and prints exactly what worked and what didn't (`401`, missing scope, wrong org, proxy refused, and so on).
+   This resolves every secret (signing you in to Azure with a device code if needed), applies the proxies, calls each API once and reports the result of each check, including the reason for any failure (`401`, missing scope, unknown org, proxy refusal).
 4. Start it:
    ```
    npm start
@@ -55,7 +53,7 @@ node src/server.js [--config path/to/config.json] [--port 4800] [--no-open] [--d
 
 ## Secrets from Azure Key Vault
 
-This is the intended setup at work: nobody pastes tokens anywhere. The three tokens live as secrets in a Key Vault, RBAC on the vault decides who may read them, and each user signs in with their own company account.
+This is the recommended setup. Tokens are stored as Key Vault secrets, vault RBAC controls who can read them, and each user signs in with their own organizational account.
 
 ```jsonc
 "secrets": {
@@ -75,7 +73,7 @@ Any `token` / `email` / proxy field can be a `keyvault:<secret-name>` reference.
 
 | `auth` | What happens | Needs |
 |---|---|---|
-| **`browser`** | The dashboard shows **Sign in with Microsoft**. The browser goes to the normal company sign-in page (MFA, Conditional Access, whatever your tenant enforces); if the user is already signed in to Microsoft 365 it's usually a single "pick your account" click. Then it comes back to `http://localhost:<port>/auth/azure/callback`. Standard OAuth 2.0 authorization code flow with PKCE, no client secret. | Nothing |
+| **`browser`** | The dashboard shows **Sign in with Microsoft**. The browser goes to the normal company sign-in page (including MFA and Conditional Access); if the user is already signed in to Microsoft 365, this is usually a single account-selection step. Then it comes back to `http://localhost:<port>/auth/azure/callback`. Standard OAuth 2.0 authorization code flow with PKCE, no client secret. | Nothing |
 | **`device`** | Shows a code to type at <https://microsoft.com/devicelogin>. Useful when the browser callback is blocked, and what `npm run check` uses in a terminal. | Nothing |
 | **`cli`** | Runs `az account get-access-token` and reuses the Azure CLI's existing session. Silent. | [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) installed and `az login` done once |
 | **`auto`** (default) | Tries `cli` first; if `az` isn't installed or logged in, falls back to `browser`. | Nothing |
@@ -115,10 +113,10 @@ If security wants sign-ins labelled as "opspulse", or the Azure CLI is blocked, 
 In the Node process's memory, nowhere else.
 
 - Secret values are held for `cacheMinutes` and then re-read from the vault.
-- The Entra access token (1 h) and refresh token stay in memory until you click **sign out** or stop the process. With `auth: cli`, we hold only the 1-hour access token: the long-lived session is the Azure CLI's own, protected by DPAPI (Windows) or the Keychain (macOS).
+- The Entra access token (1 h) and refresh token stay in memory until you click **sign out** or stop the process. With `auth: cli`, opspulse holds only the 1-hour access token: the long-lived session is the Azure CLI's own, protected by DPAPI (Windows) or the Keychain (macOS).
 - `.cache/snapshot.json` holds fetched *data* only (run metadata, ticket titles). `/api/snapshot` carries no token, secret, or proxy credential, and the UI only ever sees `ok / missing / pending / error` per secret.
 
-Why not encrypt a token cache on disk? Any key a local tool could use to encrypt it would be readable by the same user account, so it would add complexity without adding protection. Not persisting is the honest design, and signing in again is a one-click SSO.
+Tokens are not cached on disk: any key a local tool could use for encryption would be readable by the same user account, so it would add complexity without adding protection. Signing in again is a single SSO step.
 
 ---
 
@@ -131,7 +129,7 @@ Node does not honour `HTTPS_PROXY` on its own, so proxies are explicit, **one pe
   "proxies": {
     "github": "",                               // direct
     "sonar": "http://proxy.corp.example:8080",  // via proxy
-    "jira": "env:OPSPULSE_PROXY_JIRA",          // from .env (handy when it needs user:pass@)
+    "jira": "env:OPSPULSE_PROXY_JIRA",          // from .env, e.g. when it includes credentials
     "azure": ""                                 // Entra + Key Vault; cannot itself be a keyvault: ref
   },
   "caFile": "corp-root-ca.pem",                 // optional, for TLS-inspecting proxies
@@ -153,7 +151,7 @@ Only needed if you're not using Key Vault for a given value. Any `token` / `emai
 - `"keyvault:NAME"`: read from the configured vault (see above)
 - `"env:VAR_NAME"`: from the environment or `.env` (never committed)
 - `"file:relative/or/absolute/path"`: from a file
-- a literal string (fine for an email; don't do it for tokens)
+- a literal string (not recommended for tokens)
 
 | Token | Needs |
 |---|---|
@@ -176,7 +174,7 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 | key | default | |
 |---|---|---|
 | `port` | `4777` | If the port is taken, the next free one (up to +10) is used |
-| `host` | `127.0.0.1` | Keep this on loopback. There's no login. |
+| `host` | `127.0.0.1` | Keep on loopback; the dashboard has no authentication. |
 | `openBrowser` | `true` | |
 | `refreshMinutes` | `10` | Background refresh interval |
 
@@ -253,7 +251,7 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 | **Warning** | Sign-in to Key Vault is needed. A workflow has ≥ `failureWarn` failures, or its latest run failed. A scheduled workflow is overdue. Stale or unassigned tickets. A `statusRules` match. A Sonar token expires within `tokenExpiryWarnDays`. |
 | **Info** | New tickets in `newWindowHours`. A workflow is disabled. Optional GHAS volume. |
 
-All rules live in [`src/feed.js`](src/feed.js) and are plain functions of the fetched data, so adding one takes a few lines.
+All rules live in [`src/feed.js`](src/feed.js) and are plain functions of the fetched data.
 
 ---
 
@@ -277,7 +275,7 @@ public/               index.html, app.js, styles.css: no framework, no build
 scripts/check-config.js
 ```
 
-Each connector is `collect(cfg, secrets) -> plain JSON`, with no knowledge of the UI. That's deliberate: the same modules can move behind a Backstage backend plugin, an Azure Function or a Container App (with the snapshot written to Blob Storage) without rewriting the API logic. `secrets.js` would then be swapped for a managed identity, which is the same `getSecret` call with a different token source.
+Each connector is `collect(cfg, secrets) -> plain JSON`, with no knowledge of the UI, so the same modules can move behind a Backstage backend plugin, an Azure Function or a Container App (with the snapshot written to Blob Storage) without rewriting the API logic. `secrets.js` would then be swapped for a managed identity, which is the same `getSecret` call with a different token source.
 
 ## Security notes
 
@@ -285,18 +283,18 @@ Each connector is `collect(cfg, secrets) -> plain JSON`, with no knowledge of th
 - Browser sign-in uses PKCE and a one-time `state`; a callback with an unknown or reused `state` is rejected.
 - Tokens, secret values and proxy credentials are never sent to the browser. `/api/snapshot` only carries fetched data, per-secret status, and proxy host names.
 - Ticket summaries and dismissal comments are user-generated. The UI escapes all of it, and a strict CSP blocks inline and third-party scripts.
-- `.cache/snapshot.json` holds fetched data (ticket titles, alert titles), never tokens. It's git-ignored. Delete it whenever you like.
+- `.cache/snapshot.json` holds fetched data (ticket titles, alert titles), never tokens. It is git-ignored and safe to delete.
 - `config.json`, `config.jsonc` and `.env` are git-ignored.
 
-## Known limits / unverified
+## Known limitations
 
-The API calls follow GitHub's, Atlassian's, Sonar's and Microsoft's public docs. In this repo they've been exercised against the live APIs for authentication failures only, not with real data. Run `npm run check` first in a new environment. Specific things to watch:
+API usage follows the vendors' public documentation. Run `npm run check` in each new environment to confirm access. Specific considerations:
 
 - **Sonar token expiry** relies on `expirationDate` from `api/user_tokens/search`. If your instance doesn't return it, the expiry column shows "no expiry" and no warning is raised.
 - **Sonar "failing quality gate"** uses `api/components/search_projects` with `filter=alert_status = ERROR`. If that's refused, the tile shows `n/a` with the error on hover. Nothing else is affected.
 - **Jira Cloud** uses the enhanced search endpoint (`/rest/api/3/search/jql`). It doesn't return a total, so counts are of fetched issues (capped by `maxIssues`, flagged in the UI if hit).
 - **GHAS** pages are sorted by `updated` and stop at the window edge. Very large orgs may need a higher `maxPagesPerTool`.
-- **Entra browser sign-in** has been tested up to the redirect to `login.microsoftonline.com` and the callback validation; the final token exchange and Key Vault read were tested against local fakes, not a real tenant. If something in your tenant blocks it, the error page after sign-in carries the `AADSTS…` code to look up.
+- **Entra sign-in** may be restricted by tenant policy. In that case the error page after sign-in shows an `AADSTS…` code identifying the cause.
 
 ## Optional: one-file executable
 

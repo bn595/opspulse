@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// opspulse — local ops dashboard. Zero dependencies; Node 18+.
+// opspulse server. No dependencies; requires Node 18+.
 //   node src/server.js [--config path] [--demo] [--port N] [--no-open]
 
 const http = require('http');
@@ -24,7 +24,6 @@ const ROOT = path.resolve(__dirname, '..');
 const PUBLIC = path.join(ROOT, 'public');
 const VERSION = require(path.join(ROOT, 'package.json')).version;
 
-// ---------- args ----------
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
 const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
@@ -44,7 +43,6 @@ const CONFIG_PATH = path.resolve(opt('--config') || process.env.OPSPULSE_CONFIG 
 
 process.on('unhandledRejection', (e) => console.error('  unhandled:', e?.stack || e));
 
-// ---------- state ----------
 let cfg, configMtime = 0;
 let store;
 function applyNetwork(proxies) { net.configure({ ...cfg.network, proxies }); }
@@ -84,7 +82,7 @@ try {
 } catch { /* no cache yet */ }
 
 function saveCache() {
-  // Fetched data only (ticket titles, run metadata). Never tokens or secret values.
+  // Fetched data only; never tokens or secret values.
   try {
     fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
     fs.writeFileSync(CACHE_FILE, JSON.stringify({ lastRefreshAt, sources }));
@@ -114,7 +112,7 @@ async function refresh() {
       Object.entries(CONNECTORS).map(async ([key, conn]) => {
         if (!enabled[key]) { sources[key] = { status: 'disabled', fetchedAt: null, error: null, data: null }; return; }
         if (!DEMO && store.status[NEEDS[key]] === 'pending') {
-          // The token lives in Key Vault and nobody has signed in yet: say so once, don't hammer the API.
+          // Token is in Key Vault and no one has signed in; skip the API call.
           sources[key] = { ...sources[key], status: 'error', error: 'Waiting for Key Vault sign-in', errorAt: new Date().toISOString() };
           return;
         }
@@ -124,7 +122,7 @@ async function refresh() {
           const data = DEMO ? demoData[key] : await conn.collect(cfg, secrets);
           sources[key] = { status: 'ok', fetchedAt: new Date().toISOString(), durationMs: Date.now() - t0, error: null, data };
         } catch (e) {
-          // Keep the last good data so the dashboard stays useful; flag it as stale.
+          // Keep the last successful data and mark it stale.
           sources[key] = { ...sources[key], status: 'error', error: e.message, errorAt: new Date().toISOString() };
           console.warn(`  [${key}] ${e.message}`);
         }
@@ -156,7 +154,6 @@ function snapshot() {
   };
 }
 
-// ---------- http ----------
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.png': 'image/png' };
 const SECURITY_HEADERS = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
@@ -167,7 +164,7 @@ const SECURITY_HEADERS = {
 
 let PORT;
 function allowedHost(h) {
-  // Blocks DNS-rebinding: only answer to loopback names.
+  // Loopback names only (DNS-rebinding protection).
   return h === `127.0.0.1:${PORT}` || h === `localhost:${PORT}` || h === `[::1]:${PORT}`;
 }
 
@@ -177,7 +174,7 @@ function send(res, code, body, type = 'application/json; charset=utf-8') {
 }
 function redirect(res, to) { res.writeHead(302, { Location: to, ...SECURITY_HEADERS }); res.end(); }
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-// Same-origin guard for state-changing calls: browsers won't attach this header cross-origin without CORS.
+// CSRF guard: browsers only send custom headers cross-origin after a CORS preflight, which is never approved.
 const sameOrigin = (req) => req.headers['x-opspulse'] === '1';
 
 const server = http.createServer(async (req, res) => {
@@ -198,7 +195,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
 
-    // Browser sign-in: top-level navigation to Microsoft, back to /auth/azure/callback on this port.
+    // Browser sign-in: redirect to Microsoft, which returns to /auth/azure/callback.
     if (p === '/auth/azure/start') return redirect(res, store.beginBrowserLogin(`http://localhost:${PORT}/auth/azure/callback`));
     if (p === '/auth/azure/callback') {
       try {

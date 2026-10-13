@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
-// Smoke-tests config, proxies, secrets and tokens: resolves every secret (signing in to Azure if
-// needed, with a device code in this terminal), then runs each enabled connector once.
+// Validates configuration: resolves all secrets (device-code sign-in if required), then runs
+// each enabled connector once.
 //   node scripts/check-config.js [--config path]
 
 const path = require('path');
@@ -34,7 +34,7 @@ const summarize = {
 (async () => {
   let bad = 0;
 
-  // Secrets first. In a terminal the browser flow can't call back, so use a device code instead.
+  // The browser callback is unavailable in a terminal, so use device-code sign-in.
   let r = await store.resolve();
   if (store.usesVault()) {
     console.log(`vault  : ${store.authStatus().vault} (auth: ${cfg.secrets.azureKeyVault.auth})`);

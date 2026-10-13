@@ -1,5 +1,5 @@
 'use strict';
-// GitHub Actions: workflow runs for the repos named in config.
+// GitHub Actions workflow runs for the configured repositories.
 
 const { request, nextLink } = require('../http');
 
@@ -60,7 +60,7 @@ async function fetchRepo(api, entry, ac) {
     if (url && fetched >= ac.maxRunsPerRepo) { truncated = true; break; }
   }
 
-  // For quiet workflows, look up their most recent run so "last ran X days ago" is accurate.
+  // Workflows with no runs in the window: fetch the latest run for an accurate "last run".
   const quiet = [...byId.values()].filter((w) => w.runs.length === 0 && w.state === 'active').slice(0, 40);
   await Promise.all(
     quiet.map(async (w) => {

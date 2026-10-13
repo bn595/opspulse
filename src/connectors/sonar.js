@@ -1,6 +1,6 @@
 'use strict';
-// SonarQube Cloud: token health and per-organization project hygiene counts.
-// Every sub-call is tolerant: a missing permission shows "n/a" instead of failing the panel.
+// SonarQube Cloud token health and per-organization project counts.
+// Sub-calls fail individually; a missing permission shows "n/a" for that value only.
 
 const { request } = require('../http');
 
@@ -36,7 +36,7 @@ async function collect(cfg, secrets) {
     })
   );
 
-  // Token list for the authenticated user: used to warn about upcoming expiry.
+  // Used to warn about upcoming token expiry.
   let tokens = null;
   try {
     const t = await get('/api/user_tokens/search');

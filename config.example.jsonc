@@ -1,11 +1,11 @@
-// opspulse configuration. Copy to config.json (comments are allowed there too) and edit.
-// Every setting has a default; delete what you don't need. Full reference: README.md.
+// opspulse configuration. Copy to config.json and edit. Comments are permitted.
+// All settings have defaults; omit any that are not needed. Reference: README.md.
 //
 // Token / email / proxy values are references:
-//   "keyvault:NAME"  secret NAME from the Azure Key Vault below   (recommended at work)
+//   "keyvault:NAME"  secret NAME from the Azure Key Vault below (recommended)
 //   "env:VAR"        environment variable, also read from a .env file next to this one
 //   "file:path"      contents of a file
-//   anything else    used literally (fine for an email, never for a token)
+//   other            literal value (not recommended for tokens)
 {
   "server": {
     "port": 4777,
@@ -14,36 +14,34 @@
   },
 
   // ---------------------------------------------------------------------------
-  // Network: one proxy per platform, empty = direct. Node does not read HTTPS_PROXY
-  // on its own, so set them here. user:pass@ in the URL is supported; keep the
-  // credentials in .env ("env:HTTPS_PROXY") rather than in this file.
+  // Network: proxy URL per platform; empty means direct. Node does not read HTTPS_PROXY.
+  // For proxies that require credentials (user:pass@host), use an env: reference.
   "network": {
     "proxies": {
       "github": "",
       "sonar": "env:OPSPULSE_PROXY_SONAR",   // e.g. http://proxy.corp.example:8080
       "jira": "",
-      "azure": ""                            // cannot be a keyvault: ref (needed to reach the vault)
+      "azure": ""                            // cannot be a keyvault: reference
     },
-    // PEM bundle to trust in addition to the system roots (TLS-inspecting proxies).
-    // Node's NODE_EXTRA_CA_CERTS environment variable works as well.
+    // Additional PEM CA bundle, e.g. for TLS-inspecting proxies. NODE_EXTRA_CA_CERTS also works.
     "caFile": "",
     "timeoutSeconds": 30
   },
 
   // ---------------------------------------------------------------------------
-  // Secrets: where "keyvault:NAME" references are read from.
-  // Default secret names used below: github-token, sonar-token, jira-token.
-  // Values are kept in memory only and re-read from the vault every cacheMinutes.
+  // Secrets: source for "keyvault:NAME" references.
+  // Default secret names: github-token, sonar-token, jira-token.
+  // Values are held in memory only and refreshed every cacheMinutes.
   "secrets": {
     "azureKeyVault": {
       "vaultUrl": "https://your-vault.vault.azure.net",
-      // auto    try the Azure CLI's session (az login) first, else browser sign-in
-      // cli     Azure CLI only (silent; needs `az` installed and logged in)
-      // browser company SSO in your browser
-      // device  type a code at microsoft.com/devicelogin
+      // auto     Azure CLI session if available, otherwise browser sign-in
+      // cli      Azure CLI session only (requires `az login`)
+      // browser  organization sign-in in the browser
+      // device   code entry at microsoft.com/devicelogin
       "auth": "auto",
-      // Both optional. Defaults: tenantId "organizations" (any work account, home tenant) and the
-      // Azure CLI's public client ID, so no app registration is needed. See README.
+      // Optional. Defaults to the user's home tenant and the Azure CLI's public client ID,
+      // so no app registration is required. See README.
       // "tenantId": "your-tenant-id-or-domain",
       // "clientId": "your-own-app-registration-id",
       "cacheMinutes": 60
@@ -61,7 +59,7 @@
           "repo": "your-org/sonar-permission-jobs",
           "label": "Permission jobs",
           "workflows": ["*"],
-          // warn when a scheduled workflow silently stops running
+          // warn when a scheduled workflow has not run within this many hours
           "expectEveryHours": { "Nightly permission audit": 26 }
         },
         {

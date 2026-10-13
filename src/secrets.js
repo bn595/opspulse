@@ -1,13 +1,7 @@
 'use strict';
-// Resolves the secret references in the config (env:, file:, keyvault:, literal) and holds the
-// results in memory only. Nothing here is ever written to disk:
-//   - Key Vault secret values live in this object for `cacheMinutes`, then are re-read.
-//   - The Entra access/refresh tokens live here for the life of the process. Sign-out clears them.
-//   - With `auth: cli`, no token is stored by us at all beyond the hour-long access token: the
-//     persistent SSO session is the Azure CLI's own (DPAPI/Keychain-protected) cache.
-// This is the same posture as `az` and the Azure SDKs' in-memory credential cache: there is no
-// local key we could encrypt with that an attacker on the same account couldn't also read, so the
-// honest design is "don't persist".
+// Resolves secret references (env:, file:, keyvault:, literal) and keeps results in memory only.
+// Key Vault values are cached for `cacheMinutes`; Entra tokens are held until sign-out or exit.
+// Nothing is written to disk: a local encryption key would be readable by the same user account.
 
 const fs = require('fs');
 const path = require('path');
@@ -67,7 +61,7 @@ class SecretStore {
       if (!v && !key.startsWith('proxy.')) errors.push(`${key}: ${ref} is empty — ${ref.startsWith('env:') ? 'set it in .env' : ref.startsWith('file:') ? 'file missing or empty' : 'no value'}`);
     }
     for (const k of Object.keys(this.refs)) if (k.startsWith('proxy.')) proxies[k.slice(6)] = values[k] || '';
-    // Proxies that don't come from the vault must be live before we can reach the vault.
+    // Apply non-vault proxies first; they may be required to reach the vault.
     this.applyNetwork(proxies);
 
     const wanted = Object.keys(kvNames);
@@ -115,7 +109,6 @@ class SecretStore {
     return { values, errors };
   }
 
-  // ---------- Azure token ----------
   get resource() { return this.kv.scope.replace(/\/\.default$/, ''); }
 
   async vaultToken() {
@@ -205,7 +198,7 @@ class SecretStore {
       device: this.device ? { userCode: this.device.userCode, verificationUri: this.device.verificationUri, message: this.device.message, expiresAt: this.device.expiresAt } : null,
       error: this.lastError,
       secrets: Object.fromEntries(Object.entries(this.status).filter(([k]) => !k.startsWith('proxy.'))),
-      // Proxy URLs may carry credentials, so only their host:port is exposed. Full values stay in this.proxies.
+      // Host only; proxy URLs may contain credentials.
       proxyHosts: Object.fromEntries(Object.entries(this.proxies).map(([k, v]) => { try { return [k, v ? new URL(v).host : '']; } catch { return [k, '(invalid URL)']; } })),
       loadedAt: this.cache.at || null,
     };

@@ -1,5 +1,5 @@
 'use strict';
-// Synthetic data for `--demo`: lets you try the UI with no tokens at all.
+// Synthetic data for --demo mode.
 
 function rng(seed) {
   let s = seed >>> 0;
@@ -153,7 +153,7 @@ function jira(now, r) {
 
 function generate() {
   const now = Date.now();
-  const r = rng(Math.floor(now / (10 * 60e3))); // stable within a 10-minute bucket
+  const r = rng(Math.floor(now / (10 * 60e3))); // stable for 10 minutes
   return { actions: actions(now, r), dismissals: dismissals(now, r), sonar: sonar(now), jira: jira(now, r) };
 }
 

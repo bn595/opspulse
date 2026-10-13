@@ -1,11 +1,10 @@
 'use strict';
-// Loads config.json (comments and trailing commas allowed) plus a sibling .env file.
-//
-// Any token/email/proxy value is a *reference*, resolved later by src/secrets.js:
-//   "keyvault:NAME"   -> secret NAME from the Azure Key Vault in `secrets.azureKeyVault`
-//   "env:VAR_NAME"    -> process.env.VAR_NAME (also read from .env)
-//   "file:path"       -> contents of that file (trimmed)
-//   "literal-value"   -> used as-is (fine for emails, not for tokens)
+// Loads config.json (JSONC) and a sibling .env file.
+// Token, email and proxy values are references resolved by secrets.js:
+//   "keyvault:NAME"  secret from the configured Azure Key Vault
+//   "env:VAR"        environment variable (including .env)
+//   "file:path"      file contents
+//   other            literal value
 
 const fs = require('fs');
 const path = require('path');
@@ -13,25 +12,22 @@ const path = require('path');
 const DEFAULTS = {
   server: { host: '127.0.0.1', port: 4777, openBrowser: true, refreshMinutes: 10 },
   network: {
-    // One proxy URL per platform; empty = direct. Supports env:/keyvault: refs since proxies often carry credentials.
+    // Proxy URL per platform; empty means direct. Accepts secret references.
     proxies: { github: '', sonar: '', jira: '', azure: '' },
-    caFile: '', // extra PEM CA bundle for TLS-inspecting proxies (NODE_EXTRA_CA_CERTS also works)
+    caFile: '', // additional PEM CA bundle
     timeoutSeconds: 30,
   },
   secrets: {
     azureKeyVault: {
-      vaultUrl: '', // https://<name>.vault.azure.net — required when any "keyvault:" ref is used
+      vaultUrl: '', // required when any keyvault: reference is used
       auth: 'auto', // auto | cli | browser | device
       authority: 'https://login.microsoftonline.com',
-      // 'organizations' = any work account, signed in to its home tenant. Set a tenant ID/domain
-      // for guest accounts or to pin the tenant.
+      // 'organizations' signs in to the user's home tenant. Set explicitly for guest accounts.
       tenantId: 'organizations',
-      // Defaults to the Azure CLI's public client ID: no app registration needed, Key Vault access
-      // is pre-consented in every tenant. Microsoft's Azure Identity SDK uses the same default.
-      // Replace with your own app registration to have sign-ins show up as your app's name.
+      // Azure CLI public client ID, pre-consented for Key Vault. Replace with a custom app registration if required.
       clientId: '04b07795-8ddb-461a-bbee-02f9e1bf7b46',
       scope: 'https://vault.azure.net/.default',
-      cacheMinutes: 60, // re-read secrets from the vault after this long
+      cacheMinutes: 60,
     },
   },
   github: {
@@ -67,7 +63,7 @@ const DEFAULTS = {
   },
   jira: {
     enabled: true,
-    deployment: 'cloud', // 'cloud' | 'datacenter'
+    deployment: 'cloud', // cloud | datacenter
     baseUrl: '',
     email: 'env:OPSPULSE_JIRA_EMAIL',
     token: 'env:OPSPULSE_JIRA_TOKEN',
@@ -81,7 +77,7 @@ const DEFAULTS = {
   },
 };
 
-// The reference strings that secrets.js resolves. Key = name used everywhere else.
+// Secret references resolved by secrets.js, keyed by internal name.
 function secretRefs(cfg) {
   return {
     github: cfg.github.token,
@@ -109,7 +105,7 @@ function loadDotEnv(file) {
   }
 }
 
-// JSON with // and /* */ comments and trailing commas. String-aware, so "https://x" survives.
+// Removes comments and trailing commas outside string literals.
 function stripJsonComments(src) {
   let out = '', i = 0, inStr = false;
   while (i < src.length) {
@@ -137,7 +133,7 @@ function merge(base, over) {
 
 function load(configPath) {
   let file = path.resolve(configPath);
-  // Accept config.jsonc as a fallback spelling so editors highlight comments properly.
+  // Fall back to config.jsonc when config.json is absent.
   if (!fs.existsSync(file) && fs.existsSync(file.replace(/\.json$/, '.jsonc'))) file = file.replace(/\.json$/, '.jsonc');
   const dir = path.dirname(file);
   loadDotEnv(path.join(dir, '.env'));
@@ -160,7 +156,7 @@ function load(configPath) {
   return cfg;
 }
 
-// What the browser is allowed to see about the configuration (no tokens, no proxy credentials).
+// Configuration exposed to the browser. Excludes tokens and proxy credentials.
 function publicView(cfg, secretStatus) {
   const s = secretStatus.secrets;
   return {

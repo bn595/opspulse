@@ -1,6 +1,5 @@
 'use strict';
-/* opspulse front end — plain JS, no build step. Everything rendered here comes from
-   /api/snapshot; ticket titles, comments etc. are user-generated, so ALL text goes through esc(). */
+// Renders /api/snapshot. Ticket titles and comments are user-generated: escape all text with esc().
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -52,10 +51,10 @@ const plural = (n, w, many) => `${fmt.format(n)} ${n === 1 ? w : many || w + 's'
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2); };
 const winLabel = (h) => (h < 48 ? `${h}h` : `${h / 24}d`);
 const pretty = (s) => String(s || '').replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
-// GitHub spells dismissal reasons differently per tool ("won't fix" vs "wont_fix"); fold them together.
+// Normalizes dismissal reasons, which differ by tool ("won't fix" vs "wont_fix").
 const reasonLabel = (r) => { const k = String(r || 'unspecified').toLowerCase().replace(/[_\s]+/g, ' ').replace("won't", 'wont').trim(); return k === 'wont fix' ? "Won't fix" : pretty(k); };
 
-/* ---------- icons (status always ships with icon + label) ---------- */
+/* ---------- icons ---------- */
 const ICON = {
   critical: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5.2 1.5h5.6l3.7 3.7v5.6l-3.7 3.7H5.2l-3.7-3.7V5.2z" fill="currentColor"/><path d="M8 4.6v4.2M8 10.9v.4" stroke="var(--card)" stroke-width="1.8" stroke-linecap="round"/></svg>',
   warn: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.6 15 14H1z" fill="currentColor" stroke="currentColor" stroke-linejoin="round" stroke-width="1"/><path d="M8 6v3.6M8 11.5v.3" stroke="var(--card)" stroke-width="1.7" stroke-linecap="round"/></svg>',
@@ -72,7 +71,7 @@ const tip = $('#tip');
 document.addEventListener('mouseover', (e) => {
   const t = e.target.closest('[data-tip]');
   if (!t) { tip.hidden = true; return; }
-  tip.innerHTML = t.getAttribute('data-tip'); // data-tip values are built from esc()'d text
+  tip.innerHTML = t.getAttribute('data-tip'); // values are pre-escaped
   tip.hidden = false;
 });
 document.addEventListener('mousemove', (e) => {
@@ -607,7 +606,7 @@ async function poll() {
   try {
     const res = await fetch('/api/snapshot', { cache: 'no-store' });
     snap = await res.json();
-    // Only re-render data sections when data actually changed (keeps scroll + input focus stable).
+    // Re-render only on data changes to preserve scroll position and input focus.
     const key = JSON.stringify([snap.lastRefreshAt, snap.refreshing, snap.auth?.signedIn, snap.auth?.needsLogin, snap.auth?.device?.userCode, snap.auth?.error, Object.values(snap.sources).map((s) => [s.status, s.fetchedAt, s.error])]);
     if (key !== lastKey) { lastKey = key; renderAll(); } else { now = Date.now(); renderShell(); }
   } catch {

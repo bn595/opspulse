@@ -1,7 +1,6 @@
 'use strict';
-// Jira: runs one JQL query and returns compact issues for the backlog panel.
-// Cloud uses the enhanced search endpoint (/rest/api/3/search/jql, token-paginated);
-// Data Center / Server uses /rest/api/2/search with a bearer PAT.
+// Jira issues for one JQL query. Cloud uses /rest/api/3/search/jql (token pagination);
+// Data Center uses /rest/api/2/search with a bearer PAT.
 
 const { request } = require('../http');
 
@@ -40,7 +39,7 @@ async function collect(cfg, secrets) {
     ? { Authorization: 'Basic ' + Buffer.from(`${secrets.jiraEmail}:${secrets.jira}`).toString('base64') }
     : { Authorization: `Bearer ${secrets.jira}` };
 
-  // Jira treats bad credentials as anonymous and happily returns zero issues, so verify auth first.
+  // Invalid credentials are treated as anonymous and return no issues, so verify auth first.
   try {
     await request(`${base}/rest/api/${cloud ? 3 : 2}/myself`, { headers, retries: 0, platform: 'jira' });
   } catch (e) {

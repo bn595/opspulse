@@ -1,6 +1,6 @@
 'use strict';
-// Turns connector results into the central "needs attention" feed.
-// Each item: { id, level: critical|warn|info, source, title, detail, url }
+// Builds the attention feed from connector results.
+// Item: { id, level: critical|warn|info, source, title, detail, url }
 
 const H = 3600e3;
 const D = 86400e3;
@@ -126,7 +126,7 @@ function build(sources, cfg, now = Date.now(), extra = []) {
   const items = [...extra];
   for (const [key, src] of Object.entries(sources)) {
     if (src.status === 'disabled') continue;
-    // "Waiting for Key Vault sign-in" is reported once by the secrets item, not per source.
+    // A pending Key Vault sign-in is reported once by the secrets item.
     if (src.error && !/waiting for key vault sign-in/i.test(src.error)) {
       items.push({ id: `src-${key}`, level: 'critical', source: key === 'dismissals' ? 'ghas' : key, title: `${LABEL[key]} refresh failed`, detail: src.error });
     }

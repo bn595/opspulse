@@ -1,11 +1,6 @@
 'use strict';
-// Microsoft Entra ID sign-in and Azure Key Vault access, with no SDK.
-//
-// Three ways to get a Key Vault access token, all producing the same thing:
-//   cli      `az account get-access-token` — reuses the Azure CLI's own SSO session (silent).
-//   browser  OAuth 2.0 authorization code + PKCE, public client, redirect to http://localhost:<port>.
-//   device   OAuth 2.0 device code flow — user types a code at microsoft.com/devicelogin.
-// browser/device need an app registration (public client) in your tenant: see README.
+// Microsoft Entra ID sign-in and Azure Key Vault secret retrieval.
+// Token sources: Azure CLI session, browser (authorization code + PKCE), or device code.
 
 const crypto = require('crypto');
 const { execFile } = require('child_process');
@@ -21,11 +16,10 @@ function userFromToken(token) {
   return c.preferred_username || c.upn || c.unique_name || c.email || c.name || null;
 }
 
-// ---------- Azure CLI ----------
 function cliToken(resource) {
   return new Promise((resolve, reject) => {
     const args = ['account', 'get-access-token', '--resource', resource, '--output', 'json'];
-    // On Windows `az` is a .cmd shim, which Node refuses to spawn without a shell. Args are fixed.
+    // `az` is a .cmd shim on Windows and requires a shell. Arguments are static.
     execFile('az', args, { timeout: 90000, windowsHide: true, shell: process.platform === 'win32', maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
       if (err) {
         if (err.code === 'ENOENT' || /not recognized|not found/i.test(String(stderr))) return reject(new Error('Azure CLI (az) is not installed or not on PATH'));
@@ -41,12 +35,11 @@ function cliToken(resource) {
   });
 }
 
-// ---------- OAuth (browser + device) ----------
 class EntraClient {
   constructor({ authority = 'https://login.microsoftonline.com', tenantId, clientId, scope }) {
     this.base = `${authority.replace(/\/$/, '')}/${tenantId}/oauth2/v2.0`;
     this.clientId = clientId;
-    // offline_access => refresh token, so the hour-long access token renews silently.
+    // offline_access returns a refresh token for silent renewal.
     this.scope = `${scope} offline_access openid profile`;
     this.pending = new Map(); // state -> { verifier, redirectUri, at }
   }
@@ -85,7 +78,7 @@ class EntraClient {
     return { deviceCode: data.device_code, userCode: data.user_code, verificationUri: data.verification_uri, message: data.message, intervalSec: data.interval || 5, expiresAt: Date.now() + (data.expires_in || 900) * 1000 };
   }
 
-  // Resolves with tokens, or null while the user hasn't finished yet. Throws when declined/expired.
+  // Returns tokens, or null while authorization is pending. Throws if declined or expired.
   async devicePoll(deviceCode) {
     const { status, data } = await request(`${this.base}/token`, {
       method: 'POST', platform: PLATFORM, throwOnError: false, retries: 0,
@@ -111,7 +104,6 @@ class EntraClient {
   }
 }
 
-// ---------- Key Vault ----------
 async function getSecret(vaultUrl, name, accessToken) {
   const url = `${vaultUrl.replace(/\/$/, '')}/secrets/${encodeURIComponent(name)}?api-version=7.4`;
   const { status, data } = await request(url, { platform: PLATFORM, throwOnError: false, headers: { Authorization: `Bearer ${accessToken}` } });
