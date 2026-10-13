@@ -240,8 +240,129 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 | `unassignedWarn` | `1` | Feed warns at this many unassigned open tickets |
 | `statusRules` | `[]` | `{ "status": "Blocked", "olderThanDays": 3, "level": "warn", "minCount": 1 }`. Use `olderThanHours` for finer control. Age is measured from the last status-category change (Cloud) or the last update. |
 | `maxIssues` | `1000` | Safety cap |
+| `include` / `exclude` | – | Rules, see [Exclude or include data with rules](#exclude-or-include-data-with-rules). Also available on `github.actions` and `github.dismissals`. |
+
+### `ui`
+| key | default | |
+|---|---|---|
+| `panels` | `[]` | Panel ids to show first, in order |
+| `hide` | `[]` | Panel ids to hide |
+
+### `plugins`
+A list of `{ "path": "...", "id"?, "title"?, "enabled"?, ...options }`. Paths are relative to the config file. See [Plugins](#plugins).
 
 ---
+
+## Customizing
+
+opspulse is meant to be shaped around what your team actually cares about. There are four levels, from no-config to code.
+
+### Filter and share views in the UI
+
+- Click any breakdown bar (reason, person, repository, status, assignee…), tool tile or org tab to filter. Filters combine; each breakdown is computed with the *other* filters applied, so you can still see and switch to alternatives.
+- Active filters show as pills above the table. Remove one with ×, or **Clear all**.
+- Search narrows further (title, repository, person, comment, secret type, package…).
+- Filters, search and time windows live in the URL. **Copy link** gives a link that reopens exactly that view, which is handy for bookmarks or for sending to someone.
+- **Export CSV** downloads every row matching the current filters, not just the visible page.
+
+### Exclude or include data with rules
+
+Rules filter data on the server, before counts, charts and the feed see it. Use them to remove noise you never want to see, for example dismissals handled by an automated bot.
+
+```jsonc
+"github": {
+  "dismissals": {
+    "exclude": [ { "by": "*[bot]" } ],
+    "include": [ { "tool": "secret-scanning" }, { "tool": "code-scanning", "severity": ["critical", "high"] } ]
+  }
+}
+```
+
+- An item is kept when it matches **any** `include` rule (or there are none) and **no** `exclude` rule.
+- Within one rule, **every** field must match.
+- A matcher is text (case-insensitive, `*` wildcard), `"/regex/flags"`, a number or boolean, `null` (missing or empty), or a list of matchers (any of them).
+- Fields:
+  - **GHAS dismissals:** `tool`, `org`, `repo`, `by`, `reason`, `title`, `severity`, `comment`, `secretType`, `validity`, `package`, `ecosystem`, `ruleId`, `toolName`.
+  - **Actions runs** (`github.actions`): `repo`, `workflow`, `actor`, `event`, `branch`, `conclusion`.
+  - **Jira issues** (`jira`): `status`, `assignee`, `reporter`, `priority`, `type`, `labels`, `summary`.
+- Any field of the original API response is available as `raw.<path>`, for example `{ "raw.secret_type": "/^custom_pattern_/" }` or `{ "raw.fields.labels": "security" }`.
+- Each panel notes how many items its rules hid.
+
+### Acknowledge and snooze feed items
+
+Each item in **Needs attention** has **Acknowledge** and **Snooze 24h**.
+
+- An acknowledged item stays hidden until its text changes, so *3 failures* acknowledged comes back as *5 failures*.
+- A snoozed item returns after 24 hours.
+- Hidden items are listed under **Show acknowledged or snoozed items**, each with **Restore**.
+- State is kept in `.cache/acks.json`.
+
+### Arrange panels
+
+```jsonc
+"ui": {
+  "panels": ["feed", "ghas", "my-plugin"],   // shown first, in this order
+  "hide": ["sonar"]
+}
+```
+
+Panel ids are `feed`, `kpis`, `actions`, `jira`, `ghas` and `sonar`, plus your plugins' ids. Panels you don't list keep their default order after the listed ones.
+
+## Plugins
+
+A plugin adds a panel built from your own logic: a cross-platform report, an internal API, data joined across sources. It gets the same UI as the built-in panels (filters, search, sorting, chart, CSV, links, feed items) without touching the front end.
+
+```jsonc
+"plugins": [
+  { "path": "./plugins/my-report.js", "staleDays": 30 }   // other keys become ctx.options
+]
+```
+
+```js
+// plugins/my-report.js
+module.exports = {
+  id: 'my-report',            // lowercase letters, digits, dashes; also the panel id
+  title: 'My report',
+  async collect(ctx) {
+    const data = await ctx.api.sonar.get('/api/projects/search?organization=acme&ps=500');
+    const rows = data.components.map((p) => ({ project: p.key, analyzed: p.lastAnalysisDate || null, url: `${ctx.config.sonar.url}/project/overview?id=${p.key}` }));
+    return {
+      metrics: [{ label: 'Projects', value: rows.length, kpi: true }],
+      table: {
+        columns: [
+          { key: 'project', label: 'Project', type: 'link', href: 'url' },
+          { key: 'analyzed', label: 'Last analysis', type: 'date' },
+        ],
+        rows,
+      },
+      feed: rows.length ? [] : [{ level: 'warn', title: 'No projects visible to the Sonar token' }],
+    };
+  },
+};
+```
+
+**What `collect` returns.** Every part is optional.
+
+| Key | Shape |
+|---|---|
+| `metrics` | `[{ label, value, hint?, level?: critical\|warn\|info\|good, kpi?: true }]`. `kpi: true` also shows the metric in the top row. Metrics are computed by the plugin, so they do not change with panel filters. |
+| `table` | `{ columns: [{ key, label?, type?: text\|number\|date\|link, facet?: true, href?: <key of a URL field> }], rows: [ {...} ] }`. `facet: true` adds a clickable breakdown for that column. Up to 5,000 rows. |
+| `chart` | `{ key: <date column>, days?: 30, title? }`. Rows per day, following the panel filters. |
+| `feed` | `[{ level: critical\|warn\|info, title, detail?, url?, id? }]`. These go into **Needs attention** and can be acknowledged like any other item. |
+
+**What `ctx` provides.**
+
+| | |
+|---|---|
+| `ctx.api.github.get(path)`, `ctx.api.sonar.get(path)`, `ctx.api.jira.get(path)` | Authenticated GET with the configured tokens, base URLs and proxies. Returns the parsed JSON. |
+| `ctx.request(url, opts)`, `ctx.nextLink(headers)` | The underlying HTTP client (set `opts.platform` to pick a proxy) and GitHub `Link` pagination. |
+| `ctx.secret(ref)` | Resolves any reference (`keyvault:name`, `env:VAR`, `file:path`), so a plugin can use its own secrets. |
+| `ctx.sources` | What the built-in panels fetched in this refresh: `actions`, `dismissals`, `sonar`, `jira` (or `null`). Join across them without extra API calls. |
+| `ctx.options`, `ctx.config` | The plugin's own config entry, and the full configuration. |
+
+**Behaviour.** Plugins run after the built-in connectors on every refresh. Invalid output is rejected with a message naming the field. A plugin that throws, fails to load or exceeds two minutes shows an error in its own panel and the feed, and nothing else is affected. Edits to a plugin file are picked up when `config.json` changes or the tool restarts.
+
+Plugins are ordinary Node modules running with the same access as opspulse itself, including your tokens, so only load code you trust. [`plugins/examples/runs-by-actor.js`](plugins/examples/runs-by-actor.js) is a complete example that needs no API calls; `npm run demo` shows it.
 
 ## How the feed decides what's important
 
@@ -265,24 +386,40 @@ src/
   azure.js            Entra sign-in (CLI, browser PKCE, device code) + Key Vault REST
   http.js             node:http client: per-platform proxies, extra CA, retries, readable errors
   feed.js             attention rules
+  rules.js            include/exclude rules for connector data
+  acks.js             acknowledged and snoozed feed items
+  plugins.js          plugin loading, output validation, plugin context
   demo.js             synthetic data for --demo
   connectors/
     actions.js        GitHub Actions runs
     dismissals.js     GHAS dismissals (code scanning, secret scanning, Dependabot)
     sonar.js          SonarQube Cloud
     jira.js           Jira Cloud / Data Center
-public/               index.html, app.js, styles.css: no framework, no build
+public/
+  view.js             filtering, breakdowns, URL state, CSV, panel order (shared with the tests)
+  app.js              rendering and interaction
+plugins/examples/     example plugin
 scripts/check-config.js
+test/                 node:test suites, run with npm test
 ```
 
 Each connector is `collect(cfg, secrets) -> plain JSON`, with no knowledge of the UI, so the same modules can move behind a Backstage backend plugin, an Azure Function or a Container App (with the snapshot written to Blob Storage) without rewriting the API logic. `secrets.js` would then be swapped for a managed identity, which is the same `getSecret` call with a different token source.
 
+## Development
+
+```
+npm test
+```
+
+Tests use Node's built-in runner, so there is still nothing to install. They test behaviour at module interfaces: rules, the feed, view logic, acknowledgements, plugins, the HTTP client (against local fake proxies) and the secret store (against local fake Entra and Key Vault endpoints). Nothing in the suite calls a real external service.
+
 ## Security notes
 
-- The server binds to `127.0.0.1` and rejects requests whose `Host` isn't `localhost` / `127.0.0.1` / `[::1]` (DNS-rebinding protection). Every state-changing endpoint (refresh, device sign-in, sign-out) requires a custom header, so other websites can't trigger them.
+- The server binds to `127.0.0.1` and rejects requests whose `Host` isn't `localhost` / `127.0.0.1` / `[::1]` (DNS-rebinding protection). Every state-changing endpoint (refresh, sign-in, sign-out, acknowledge) requires a custom header, so other websites can't trigger them. Request bodies are capped at 4 KB.
 - Browser sign-in uses PKCE and a one-time `state`; a callback with an unknown or reused `state` is rejected.
 - Tokens, secret values and proxy credentials are never sent to the browser. `/api/snapshot` only carries fetched data, per-secret status, and proxy host names.
-- Ticket summaries and dismissal comments are user-generated. The UI escapes all of it, and a strict CSP blocks inline and third-party scripts.
+- Ticket summaries and dismissal comments are user-generated. The UI escapes all of it, and a strict CSP blocks inline and third-party scripts. CSV exports prefix text cells that start with `=`, `+`, `-` or `@` so spreadsheet applications don't run them as formulas.
+- Plugins run with the same access as opspulse, including tokens. Only load plugin code you trust.
 - `.cache/snapshot.json` holds fetched data (ticket titles, alert titles), never tokens. It is git-ignored and safe to delete.
 - `config.json`, `config.jsonc` and `.env` are git-ignored.
 

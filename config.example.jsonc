@@ -13,6 +13,12 @@
     "refreshMinutes": 10
   },
 
+  // Panel order and visibility. Ids: feed, kpis, actions, jira, ghas, sonar, or a plugin id.
+  "ui": {
+    "panels": [],
+    "hide": []
+  },
+
   // ---------------------------------------------------------------------------
   // Network: proxy URL per platform; empty means direct. Node does not read HTTPS_PROXY.
   // For proxies that require credentials (user:pass@host), use an env: reference.
@@ -110,5 +116,12 @@
       { "status": "Blocked", "olderThanDays": 3, "level": "warn" },
       { "status": "Triage", "olderThanHours": 48, "level": "warn" }
     ]
-  }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Plugins: your own panels. Keys other than path/id/title/enabled are passed as ctx.options.
+  // See README "Plugins" and plugins/examples/runs-by-actor.js.
+  "plugins": [
+    // { "path": "./plugins/examples/runs-by-actor.js", "days": 7, "failureWarn": 3 }
+  ]
 }
