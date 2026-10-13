@@ -24,6 +24,7 @@ const ui = {
   focus: null,
   jiraSort: store.get('jiraSort', { key: 'updated', dir: -1 }),
   feedAll: false,
+  showMuted: false,
 };
 
 /* ---------- formatting ---------- */
@@ -333,7 +334,7 @@ function renderShell() {
   const so = $('#signout'); if (so) so.onclick = async () => { await post('/api/auth/signout'); poll(); };
 }
 
-const post = (path) => fetch(path, { method: 'POST', headers: { 'X-OpsPulse': '1' } }).then((r) => r.json()).catch(() => null);
+const post = (path, body) => fetch(path, { method: 'POST', headers: { 'X-OpsPulse': '1', 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json()).catch(() => null);
 async function startDevice() {
   const b = $('#device-start'); if (b) { b.disabled = true; b.textContent = 'Requesting code…'; }
   const r = await post('/api/auth/device');
@@ -341,29 +342,53 @@ async function startDevice() {
   poll();
 }
 
-function renderFeed() {
-  const items = snap.feed;
-  const crit = items.filter((i) => i.level === 'critical').length;
-  const warn = items.filter((i) => i.level === 'warn').length;
-  $('#feed-summary').textContent = items.length ? [crit && `${crit} critical`, warn && plural(warn, 'warning'), items.length - crit - warn && `${items.length - crit - warn} info`].filter(Boolean).join(' · ') : '';
-  if (!snap.lastRefreshAt && !items.length) { $('#feed').innerHTML = '<div class="skeleton" style="height:56px"></div>'; return; }
-  if (!items.length) {
-    $('#feed').innerHTML = `<div class="feed-empty"><span class="lvl good">${ICON.good} All clear</span><span>Nothing needs attention right now.</span></div>`;
-    return;
-  }
-  const LIMIT = 6;
-  const shown = ui.feedAll ? items : items.slice(0, LIMIT);
-  $('#feed').innerHTML =
-    shown.map((i) => `<div class="feed-item ${i.level}">
-        <span class="lvl ${i.level}">${ICON[i.level]}${LEVEL_LABEL[i.level]}</span>
-        <div><div class="fi-title">${esc(i.title)}</div>${i.detail ? `<div class="fi-detail">${esc(i.detail)}</div>` : ''}</div>
-        <span class="src-tag">${esc(SRC_LABEL[i.source] || i.source)}</span>
-        ${i.url ? `<a class="small" href="${href(i.url)}" target="_blank" rel="noopener">Open ↗</a>` : '<span></span>'}
-      </div>`).join('') +
-    (items.length > LIMIT ? `<button class="link-btn feed-more" id="feed-toggle">${ui.feedAll ? 'Show fewer' : `Show all ${items.length}`}</button>` : '');
-  const t = $('#feed-toggle');
-  if (t) t.onclick = () => { ui.feedAll = !ui.feedAll; renderFeed(); };
+function feedRow(i) {
+  const muted = i.muted
+    ? `<span class="muted small">${i.muted.kind === 'snoozed' ? `Snoozed until ${esc(dateStr(i.muted.until))}` : 'Acknowledged'}</span><button class="btn sm ghost" type="button" data-feed="restore" data-id="${esc(i.id)}">Restore</button>`
+    : `<button class="btn sm ghost" type="button" data-feed="ack" data-id="${esc(i.id)}" data-tip="Hide until this item changes">Acknowledge</button><button class="btn sm ghost" type="button" data-feed="snooze" data-id="${esc(i.id)}" data-tip="Hide for 24 hours">Snooze 24h</button>`;
+  return `<div class="feed-item ${i.level}${i.muted ? ' is-muted' : ''}">
+      <span class="lvl ${i.level}">${ICON[i.level]}${LEVEL_LABEL[i.level]}</span>
+      <div><div class="fi-title">${esc(i.title)}</div>${i.detail ? `<div class="fi-detail">${esc(i.detail)}</div>` : ''}</div>
+      <span class="src-tag">${esc(SRC_LABEL[i.source] || i.source)}</span>
+      <span class="fi-actions">${i.url ? `<a class="small" href="${href(i.url)}" target="_blank" rel="noopener">Open ↗</a>` : ''}${muted}</span>
+    </div>`;
 }
+
+function renderFeed() {
+  const active = snap.feed.filter((i) => !i.muted);
+  const muted = snap.feed.filter((i) => i.muted);
+  const crit = active.filter((i) => i.level === 'critical').length;
+  const warn = active.filter((i) => i.level === 'warn').length;
+  const info = active.length - crit - warn;
+  $('#feed-summary').textContent = [crit && `${crit} critical`, warn && plural(warn, 'warning'), info && `${info} info`, muted.length && `${muted.length} hidden`].filter(Boolean).join(' · ');
+  if (!snap.lastRefreshAt && !snap.feed.length) { $('#feed').innerHTML = '<div class="skeleton" style="height:56px"></div>'; return; }
+
+  const LIMIT = 6;
+  const shown = ui.feedAll ? active : active.slice(0, LIMIT);
+  let html = active.length
+    ? shown.map(feedRow).join('')
+    : `<div class="feed-empty"><span class="lvl good">${ICON.good} All clear</span><span>Nothing needs attention right now.</span></div>`;
+  const links = [];
+  if (active.length > LIMIT) links.push(`<button class="link-btn" type="button" data-feed="all">${ui.feedAll ? 'Show fewer' : `Show all ${active.length}`}</button>`);
+  if (muted.length) links.push(`<button class="link-btn" type="button" data-feed="muted">${ui.showMuted ? 'Hide' : 'Show'} ${plural(muted.length, 'acknowledged or snoozed item')}</button>`);
+  if (links.length) html += `<div class="feed-links">${links.join('')}</div>`;
+  if (ui.showMuted && muted.length) html += muted.map(feedRow).join('');
+  $('#feed').innerHTML = html;
+}
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-feed]');
+  if (!b) return;
+  const action = b.dataset.feed;
+  if (action === 'all') { ui.feedAll = !ui.feedAll; return renderFeed(); }
+  if (action === 'muted') { ui.showMuted = !ui.showMuted; return renderFeed(); }
+  const item = snap.feed.find((i) => i.id === b.dataset.id);
+  if (!item) return;
+  b.disabled = true;
+  const body = action === 'restore' ? { id: item.id } : { id: item.id, title: item.title, ...(action === 'snooze' ? { hours: 24 } : {}) };
+  await post(`/api/feed/${action}`, body);
+  poll();
+});
 
 /* ---------- derived numbers ---------- */
 function actionsStats(winH) {
@@ -768,7 +793,7 @@ async function poll() {
     const res = await fetch('/api/snapshot', { cache: 'no-store' });
     snap = await res.json();
     // Re-render only on data changes to preserve scroll position and input focus.
-    const key = JSON.stringify([snap.lastRefreshAt, snap.refreshing, snap.auth?.signedIn, snap.auth?.needsLogin, snap.auth?.device?.userCode, snap.auth?.error, Object.values(snap.sources).map((s) => [s.status, s.fetchedAt, s.error])]);
+    const key = JSON.stringify([snap.feed.map((i) => i.id + (i.muted?.kind || '')), snap.lastRefreshAt, snap.refreshing, snap.auth?.signedIn, snap.auth?.needsLogin, snap.auth?.device?.userCode, snap.auth?.error, Object.values(snap.sources).map((s) => [s.status, s.fetchedAt, s.error])]);
     if (key !== lastKey) { lastKey = key; renderAll(); } else { now = Date.now(); renderShell(); }
   } catch {
     $('#updated').textContent = 'Server unreachable — is opspulse still running?';

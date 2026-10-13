@@ -105,7 +105,12 @@ main { padding-top: 20px; padding-bottom: 40px; display: flex; flex-direction: c
 .fi-detail { color: var(--text-2); font-size: 12.5px; margin-top: 1px; overflow-wrap: anywhere; }
 .src-tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); padding: 1px 7px; border-radius: 99px; white-space: nowrap; }
 .feed-empty { display: flex; align-items: center; gap: 10px; padding: 16px; background: var(--card); border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-2); }
-.feed-more { align-self: flex-start; }
+.feed-links { display: flex; gap: 16px; }
+.fi-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end; white-space: nowrap; }
+.fi-actions a { margin-right: 4px; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
+.btn.ghost:hover { background: var(--card-2); border-color: var(--border); color: var(--text); }
+.feed-item.is-muted { border-left-color: var(--neutral); opacity: .75; }
 
 /* KPI tiles */
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
@@ -230,7 +235,8 @@ tbody tr:hover td { background: var(--card-2); }
 @media (max-width: 900px) {
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
   .sources { display: none; }
-  .feed-item { grid-template-columns: 1fr auto; gap: 6px 10px; }
+  .feed-item { grid-template-columns: 1fr; gap: 6px 10px; }
+  .fi-actions { justify-content: flex-start; flex-wrap: wrap; }
   .feed-item .lvl { grid-column: 1 / -1; }
   .feed-item .src-tag { display: none; }
 }

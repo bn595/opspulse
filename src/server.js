@@ -13,6 +13,7 @@ const net = require('./http');
 const feed = require('./feed');
 const demo = require('./demo');
 const { SecretStore } = require('./secrets');
+const { createAcks } = require('./acks');
 const CONNECTORS = {
   actions: require('./connectors/actions'),
   dismissals: require('./connectors/dismissals'),
@@ -68,6 +69,7 @@ const ENABLED = () => ({
 });
 
 const CACHE_FILE = path.join(cfg._dir, '.cache', DEMO ? 'demo.json' : 'snapshot.json');
+const acks = createAcks({ file: path.join(cfg._dir, '.cache', DEMO ? 'demo-acks.json' : 'acks.json') });
 const sources = {};
 for (const k of Object.keys(CONNECTORS)) sources[k] = { status: 'pending', fetchedAt: null, error: null, data: null };
 let refreshing = null;
@@ -150,7 +152,7 @@ function snapshot() {
     config: config.publicView(cfg, auth),
     auth,
     sources,
-    feed: feed.build(sources, cfg, Date.now(), DEMO ? [] : extra),
+    feed: acks.annotate(feed.build(sources, cfg, Date.now(), DEMO ? [] : extra)),
   };
 }
 
@@ -177,6 +179,28 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 // CSRF guard: browsers only send custom headers cross-origin after a CORS preflight, which is never approved.
 const sameOrigin = (req) => req.headers['x-opspulse'] === '1';
 
+function readJson(req, limit = 4096) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size <= limit) chunks.push(c);
+    });
+    req.on('end', () => {
+      if (size > limit) return reject(Object.assign(new Error('request body too large'), { status: 413 }));
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch { reject(Object.assign(new Error('invalid JSON'), { status: 400 })); }
+    });
+    req.on('error', reject);
+  });
+}
+
+const FEED_ACTIONS = {
+  '/api/feed/ack': (b) => acks.acknowledge(b),
+  '/api/feed/snooze': (b) => acks.snooze(b, b.hours),
+  '/api/feed/restore': (b) => acks.restore(String(b.id || '')),
+};
+
 const server = http.createServer(async (req, res) => {
   if (!allowedHost(req.headers.host)) return send(res, 403, { error: 'bad host' });
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -191,6 +215,11 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/refresh') { refresh(); return send(res, 202, { ok: true }); }
       if (p === '/api/auth/device') { const d = await store.startDeviceLogin(); return send(res, 200, { userCode: d.userCode, verificationUri: d.verificationUri, message: d.message, expiresAt: d.expiresAt }); }
       if (p === '/api/auth/signout') { store.signOut(); return send(res, 200, { ok: true }); }
+      if (FEED_ACTIONS[p]) {
+        const body = await readJson(req);
+        try { FEED_ACTIONS[p](body); } catch (e) { return send(res, 400, { error: e.message }); }
+        return send(res, 200, { ok: true });
+      }
       return send(res, 404, { error: 'not found' });
     }
     if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
@@ -214,7 +243,7 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, buf, TYPES[path.extname(file)] || 'application/octet-stream');
     });
   } catch (e) {
-    send(res, 500, { error: e.message });
+    send(res, e.status || 500, { error: e.message });
   }
 });
 
