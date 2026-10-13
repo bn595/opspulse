@@ -4,9 +4,11 @@
 const { request, nextLink } = require('../http');
 const rules = require('../rules');
 
+const githubHeaders = (token) => ({ Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' });
+
 function gh(cfg, token) {
   const base = cfg.github.apiUrl.replace(/\/$/, '');
-  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+  const headers = githubHeaders(token);
   return {
     base,
     get: (p) => request(p.startsWith('http') ? p : base + p, { headers, platform: 'github' }),
@@ -37,9 +39,8 @@ function wanted(filter, wf) {
   return filter.some((f) => f === wf.name || f === file || f === wf.path || String(f) === String(wf.id));
 }
 
-async function fetchRepo(api, entry, ac, keep) {
+async function fetchRepo(api, entry, ac, filter) {
   const repo = entry.repo;
-  let hidden = 0;
   const since = new Date(Date.now() - ac.lookbackHours * 3600e3).toISOString().replace(/\.\d{3}Z$/, '+00:00');
 
   const wfRes = await api.get(`/repos/${repo}/actions/workflows?per_page=100`);
@@ -58,7 +59,7 @@ async function fetchRepo(api, entry, ac, keep) {
       const wf = byId.get(r.workflow_id);
       if (!wf || (entry.branch && r.head_branch !== entry.branch)) continue;
       const run = compactRun(r);
-      if (keep && !keep({ ...run, repo, workflow: wf.name, raw: r })) { hidden++; continue; }
+      if (!filter.keep({ ...run, repo, workflow: wf.name, raw: r })) continue;
       wf.runs.push(run);
     }
     url = nextLink(res.headers);
@@ -87,7 +88,7 @@ async function fetchRepo(api, entry, ac, keep) {
     label: entry.label || repo,
     url: `${api.base.includes('api.github.com') ? 'https://github.com' : api.base.replace(/\/api\/v3$/, '')}/${repo}/actions`,
     truncated,
-    hidden,
+    hidden: filter.hidden,
     workflows: [...byId.values()].sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
@@ -97,11 +98,11 @@ async function collect(cfg, secrets) {
   if (!secrets.github) throw new Error('No GitHub token configured (github.token)');
   if (!ac.repos.length) throw new Error('No repos listed under github.actions.repos');
   const api = gh(cfg, secrets.github);
-  const keep = rules.compile(ac, 'github.actions');
+  const filters = ac.repos.map(() => rules.filter(ac, 'github.actions'));
   const repos = await Promise.all(
-    ac.repos.map(async (entry) => {
+    ac.repos.map(async (entry, i) => {
       try {
-        return await fetchRepo(api, entry, ac, keep);
+        return await fetchRepo(api, entry, ac, filters[i]);
       } catch (e) {
         return { repo: entry.repo, label: entry.label || entry.repo, error: e.message, workflows: [] };
       }
@@ -111,4 +112,4 @@ async function collect(cfg, secrets) {
   return { lookbackHours: ac.lookbackHours, repos };
 }
 
-module.exports = { collect, gh };
+module.exports = { collect, gh, githubHeaders };

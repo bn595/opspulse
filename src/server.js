@@ -14,7 +14,7 @@ const feed = require('./feed');
 const demo = require('./demo');
 const { SecretStore } = require('./secrets');
 const { createAcks } = require('./acks');
-const { loadPlugins, runPlugin, createContext } = require('./plugins');
+const { loadPlugins, runPlugin, createContext, pluginKey, pluginIdOf } = require('./plugins');
 const CONNECTORS = {
   actions: require('./connectors/actions'),
   dismissals: require('./connectors/dismissals'),
@@ -50,7 +50,8 @@ let cfg, configMtime = 0;
 let store;
 let plugins = [];
 const sources = {};
-for (const k of Object.keys(CONNECTORS)) sources[k] = { status: 'pending', fetchedAt: null, error: null, data: null };
+const newSource = (extra) => ({ status: 'pending', fetchedAt: null, error: null, data: null, ...extra });
+for (const k of Object.keys(CONNECTORS)) sources[k] = newSource();
 function applyNetwork(proxies) { net.configure({ ...cfg.network, proxies }); }
 
 function loadConfig() {
@@ -65,9 +66,9 @@ function loadConfig() {
   applyNetwork({});
   plugins = loadPlugins(DEMO ? [{ path: EXAMPLE_PLUGIN, failureWarn: 5 }] : cfg.plugins, cfg._dir);
   for (const p of plugins) if (p.error) console.warn(`  [plugin ${p.id}] ${p.error}`);
-  const keep = new Set(plugins.map((p) => `plugin:${p.id}`));
-  for (const k of Object.keys(sources)) if (k.startsWith('plugin:') && !keep.has(k)) delete sources[k];
-  for (const p of plugins) sources[`plugin:${p.id}`] = { status: 'pending', fetchedAt: null, error: null, data: null, ...sources[`plugin:${p.id}`], title: p.title };
+  const configured = new Set(plugins.map((p) => pluginKey(p.id)));
+  for (const k of Object.keys(sources)) if (pluginIdOf(k) && !configured.has(k)) delete sources[k];
+  for (const p of plugins) sources[pluginKey(p.id)] = newSource({ ...sources[pluginKey(p.id)], title: p.title });
 }
 loadConfig();
 
@@ -120,7 +121,7 @@ async function refresh() {
     const NEEDS = { actions: 'github', dismissals: 'github', sonar: 'sonar', jira: 'jira' };
     await Promise.all(
       Object.entries(CONNECTORS).map(async ([key, conn]) => {
-        if (!enabled[key]) { sources[key] = { status: 'disabled', fetchedAt: null, error: null, data: null }; return; }
+        if (!enabled[key]) { sources[key] = newSource({ status: 'disabled' }); return; }
         if (!DEMO && store.status[NEEDS[key]] === 'pending') {
           // Token is in Key Vault and no one has signed in; skip the API call.
           sources[key] = { ...sources[key], status: 'error', error: 'Waiting for Key Vault sign-in', errorAt: new Date().toISOString() };
@@ -151,8 +152,8 @@ async function refresh() {
 }
 
 async function refreshPlugin(p, secrets, builtins) {
-  const key = `plugin:${p.id}`;
-  if (p.error) { sources[key] = { status: 'error', title: p.title, fetchedAt: null, error: p.error, data: null }; return; }
+  const key = pluginKey(p.id);
+  if (p.error) { sources[key] = newSource({ status: 'error', title: p.title, error: p.error }); return; }
   sources[key] = { ...sources[key], status: 'refreshing' };
   const t0 = Date.now();
   try {
@@ -222,7 +223,7 @@ function readJson(req, limit = 4096) {
 
 const FEED_ACTIONS = {
   '/api/feed/ack': (b) => acks.acknowledge(b),
-  '/api/feed/snooze': (b) => acks.snooze(b, b.hours),
+  '/api/feed/snooze': (b) => acks.snooze(b, 24),
   '/api/feed/restore': (b) => acks.restore(String(b.id || '')),
 };
 

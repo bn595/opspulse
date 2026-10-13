@@ -2,6 +2,8 @@
 // Builds the attention feed from connector results.
 // Item: { id, level: critical|warn|info, source, title, detail, url }
 
+const { pluginIdOf } = require('./plugins');
+
 const H = 3600e3;
 const D = 86400e3;
 const FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
@@ -104,7 +106,7 @@ function sonarItems(src, cfg, now) {
     if (!t.expirationDate) continue;
     const left = Date.parse(t.expirationDate) - now;
     if (left < cfg.sonar.tokenExpiryWarnDays * D) {
-      out.push({ id: `sonar-tok-${t.name}`, level: left < 3 * D ? 'critical' : 'warn', source: 'sonar', title: left < 0 ? `Sonar token “${t.name}” has expired` : `Sonar token “${t.name}” expires in ${ago(left)}`, detail: 'Rotate it before the permission jobs start failing', url: `${src.data.url}/account/security` });
+      out.push({ id: `sonar-tok-${t.name}`, level: left < 3 * D ? 'critical' : 'warn', source: 'sonar', title: left < 0 ? `Sonar token “${t.name}” has expired` : `Sonar token “${t.name}” expires in ${ago(left)}`, detail: 'Rotate it before integrations that use it start failing', url: `${src.data.url}/account/security` });
     }
   }
   return out;
@@ -126,15 +128,15 @@ function build(sources, cfg, now = Date.now(), extra = []) {
   const items = [...extra];
   for (const [key, src] of Object.entries(sources)) {
     if (src.status === 'disabled') continue;
-    const plugin = key.startsWith('plugin:');
-    const label = plugin ? src.title || key.slice(7) : LABEL[key];
-    const source = plugin ? key.slice(7) : key === 'dismissals' ? 'ghas' : key;
+    const pluginId = pluginIdOf(key);
+    const label = pluginId ? src.title || pluginId : LABEL[key];
+    const source = pluginId || (key === 'dismissals' ? 'ghas' : key);
     // A pending Key Vault sign-in is reported once by the secrets item.
     if (src.error && !/waiting for key vault sign-in/i.test(src.error)) {
       items.push({ id: `src-${key}`, level: 'critical', source, title: `${label} refresh failed`, detail: src.error });
     }
     if (src.data) {
-      try { items.push(...(plugin ? src.data.feed || [] : BUILDERS[key](src, cfg, now))); } catch (e) { items.push({ id: `feed-${key}`, level: 'warn', source, title: `Couldn't evaluate ${label} rules`, detail: e.message }); }
+      try { items.push(...(pluginId ? src.data.feed || [] : BUILDERS[key](src, cfg, now))); } catch (e) { items.push({ id: `feed-${key}`, level: 'warn', source, title: `Couldn't evaluate ${label} rules`, detail: e.message }); }
     }
   }
   return items.sort((a, b) => RANK[a.level] - RANK[b.level] || (b.count || 0) - (a.count || 0));

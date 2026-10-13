@@ -51,3 +51,12 @@ test('invalid requests are rejected', () => {
   assert.throws(() => acks.snooze(item('x'), 0), /hours must be between 1 and 720/);
   assert.throws(() => acks.snooze(item('x'), 'soon'), /hours must be between 1 and 720/);
 });
+
+test('an acknowledgement does not expire while the item is unchanged', () => {
+  let now = Date.parse('2026-10-13T12:00:00Z');
+  const acks = createAcks({ now: () => now });
+  acks.acknowledge(item('Sync groups is failing'));
+  now += 90 * 86400e3;
+  acks.snooze({ id: 'other', title: 'Other item' }, 24); // any later write
+  assert.deepEqual(acks.annotate([item('Sync groups is failing')])[0].muted, { kind: 'acknowledged' });
+});

@@ -53,10 +53,9 @@ const TOOLS = {
   },
 };
 
-async function fetchTool(api, org, tool, dc, sinceMs, keep) {
+async function fetchTool(api, org, tool, dc, sinceMs, filter) {
   const def = TOOLS[tool];
   const out = [];
-  let hidden = 0;
   let url = def.path(org);
   let pages = 0;
   let truncated = false;
@@ -70,14 +69,14 @@ async function fetchTool(api, org, tool, dc, sinceMs, keep) {
       if (tool === 'secret-scanning' && !dc.secretResolutions.includes(a.resolution)) continue;
       const d = { tool, org, ...def.map(a) };
       if (!d.at || Date.parse(d.at) < sinceMs) continue;
-      if (keep && !keep({ ...d, raw: a })) { hidden++; continue; }
+      if (!filter.keep({ ...d, raw: a })) continue;
       out.push(d);
     }
     if (olderSeen) break;
     url = nextLink(res.headers);
     if (url && ++pages >= dc.maxPagesPerTool) { truncated = true; break; }
   }
-  return { items: out, truncated, hidden };
+  return { items: out, truncated };
 }
 
 async function collect(cfg, secrets) {
@@ -86,17 +85,16 @@ async function collect(cfg, secrets) {
   if (!dc.orgs.length) throw new Error('No orgs listed under github.dismissals.orgs');
   const api = gh(cfg, secrets.github);
   const sinceMs = Date.now() - dc.lookbackDays * 86400e3;
-  const keep = rules.compile(dc, 'github.dismissals');
+  const filters = dc.orgs.map(() => rules.filter(dc, 'github.dismissals'));
 
   const orgs = await Promise.all(
-    dc.orgs.map(async (org) => {
+    dc.orgs.map(async (org, i) => {
       const result = { org, items: [], errors: {}, truncated: [], hidden: 0 };
       await Promise.all(
         dc.tools.filter((t) => TOOLS[t]).map(async (tool) => {
           try {
-            const r = await fetchTool(api, org, tool, dc, sinceMs, keep);
+            const r = await fetchTool(api, org, tool, dc, sinceMs, filters[i]);
             result.items.push(...r.items);
-            result.hidden += r.hidden;
             if (r.truncated) result.truncated.push(tool);
           } catch (e) {
             result.errors[tool] = e.message;
@@ -104,6 +102,7 @@ async function collect(cfg, secrets) {
         })
       );
       result.items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+      result.hidden = filters[i].hidden;
       return result;
     })
   );

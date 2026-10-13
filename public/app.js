@@ -18,11 +18,11 @@ let now = Date.now();
 const ui = {
   win: store.get('win', 24),
   ghasWin: store.get('ghasWin', 30),
-  f: {},   // panel -> { facet: value }
-  q: {},   // panel -> search text
-  all: {}, // panel -> show all rows
+  filters: {},  // panel -> { facet: value }
+  queries: {},  // panel -> search text
+  expanded: {}, // panel -> show all rows
+  sort: { jira: store.get('jiraSort', { key: 'updated', dir: -1 }) }, // panel -> { key, dir }
   focus: null,
-  jiraSort: store.get('jiraSort', { key: 'updated', dir: -1 }),
   feedAll: false,
   showMuted: false,
 };
@@ -138,8 +138,8 @@ function legend(items) {
   return `<div class="legend">${items.map(([cls, name]) => `<span><i class="sw ${cls}"></i>${esc(name)}</span>`).join('')}</div>`;
 }
 // Horizontal bars. rows: [{ label, v, key?, cls?, tip? }]. With panel + facet, each bar toggles a filter.
-function hbars(rows, { panel, facet, active, empty = 'Nothing in this window' } = {}) {
-  if (!rows.length) return `<div class="empty small">${esc(empty)}</div>`;
+function hbars(rows, { panel, facet, active } = {}) {
+  if (!rows.length) return '<div class="empty small">Nothing in this window</div>';
   const m = Math.max(...rows.map((r) => r.v), 1);
   const click = panel && facet;
   return `<div class="hbars${active != null ? ' has-active' : ''}">${rows.map((r) => {
@@ -174,47 +174,55 @@ const FACETS = {};
 const SEARCH = {};
 const facetDefs = (panel) => FACETS[panel] || {};
 
-const panelCtx = (panel) => ({ facets: facetDefs(panel), filters: ui.f[panel] || {}, query: ui.q[panel] || '', search: SEARCH[panel] });
+const panelCtx = (panel) => ({ facets: facetDefs(panel), filters: ui.filters[panel] || {}, query: ui.queries[panel] || '', search: SEARCH[panel] });
 const applyFilters = (panel, items, except) => OpsView.filterItems(items, panelCtx(panel), except);
 
 // Breakdown for one facet, computed with every other filter applied.
-function facetBars(panel, facet, items, { limit, cls, sort, empty } = {}) {
+function facetBars(panel, facet, items, { limit, cls, sort } = {}) {
   const def = facetDefs(panel)[facet];
   const { rows, more } = OpsView.breakdown(items, panelCtx(panel), facet, { limit, sort });
   const bars = rows.map((r) => ({ key: r.key, label: def.fmt ? def.fmt(r.key) : r.key, v: r.count, cls: cls ? cls(r.key) : undefined }));
-  return hbars(bars, { panel, facet, active: ui.f[panel]?.[facet], empty }) + (more ? `<div class="muted small more-note">+${fmt.format(more)} more · search to narrow</div>` : '');
+  return hbars(bars, { panel, facet, active: ui.filters[panel]?.[facet] }) + (more ? `<div class="muted small more-note">+${fmt.format(more)} more · search to narrow</div>` : '');
 }
 
 function filterBar(panel, n, noun, extra = '') {
   const defs = facetDefs(panel);
-  const pills = Object.entries(ui.f[panel] || {}).map(([k, v]) => `<span class="filter-pill">${esc(defs[k]?.label || k)}: ${esc(defs[k]?.fmt ? defs[k].fmt(v) : v)}<button type="button" data-panel="${esc(panel)}" data-unfacet="${esc(k)}" aria-label="Remove ${esc(defs[k]?.label || k)} filter">×</button></span>`).join('');
-  const any = pills || ui.q[panel];
+  const pills = Object.entries(ui.filters[panel] || {}).map(([k, v]) => `<span class="filter-pill">${esc(defs[k]?.label || k)}: ${esc(defs[k]?.fmt ? defs[k].fmt(v) : v)}<button type="button" data-panel="${esc(panel)}" data-unfacet="${esc(k)}" aria-label="Remove ${esc(defs[k]?.label || k)} filter">×</button></span>`).join('');
+  const any = pills || ui.queries[panel];
   return `<div class="toolbar">
-    <input class="input" type="search" data-search="${esc(panel)}" placeholder="Search…" value="${esc(ui.q[panel] || '')}" aria-label="Search">
+    <input class="input" type="search" data-search="${esc(panel)}" placeholder="Search…" value="${esc(ui.queries[panel] || '')}" aria-label="Search">
     ${pills}${any ? `<button class="link-btn" type="button" data-clearall="${esc(panel)}">Clear all</button>` : ''}
     <span class="muted small">${plural(n, noun)}</span>
     <span class="tb-right">${extra}${EXPORT[panel] ? exportBtn(panel) : ''}<button class="btn sm" type="button" data-copylink="${esc(panel)}">Copy link</button></span>
   </div>`;
 }
 
-function setFacet(panel, facet, value, toggle) {
-  const f = (ui.f[panel] ||= {});
-  if (value == null || (toggle && f[facet] === value)) delete f[facet];
-  else f[facet] = value;
-  if (!Object.keys(f).length) delete ui.f[panel];
-  ui.all[panel] = false;
+function filtersChanged(panel) {
+  if (ui.filters[panel] && !Object.keys(ui.filters[panel]).length) delete ui.filters[panel];
+  ui.expanded[panel] = false;
   ui.focus = panel;
   writeHash();
   rerender(panel);
 }
+function setFacet(panel, facet, value, toggle) {
+  const f = (ui.filters[panel] ||= {});
+  if (value == null || (toggle && f[facet] === value)) delete f[facet];
+  else f[facet] = value;
+  filtersChanged(panel);
+}
+function clearFilters(panel) {
+  delete ui.filters[panel];
+  delete ui.queries[panel];
+  filtersChanged(panel);
+}
 
 function writeHash() {
-  history.replaceState(null, '', '#' + OpsView.encodeState({ win: ui.win, ghasWin: ui.ghasWin, filters: ui.f, queries: ui.q, focus: ui.focus }));
+  history.replaceState(null, '', '#' + OpsView.encodeState({ win: ui.win, ghasWin: ui.ghasWin, filters: ui.filters, queries: ui.queries, focus: ui.focus }));
 }
 function readHash() {
   const st = OpsView.decodeState(location.hash);
-  ui.f = st.filters;
-  ui.q = st.queries;
+  ui.filters = st.filters;
+  ui.queries = st.queries;
   if (st.win) ui.win = st.win;
   if (st.ghasWin) ui.ghasWin = st.ghasWin;
   if (st.focus) ui.focus = st.focus;
@@ -236,6 +244,41 @@ function downloadCsv(panel) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 const exportBtn = (panel) => `<button class="btn sm" type="button" data-export="${esc(panel)}">Export CSV</button>`;
+
+const pluginKey = (id) => `plugin:${id}`;
+const pluginIdOf = (key) => (key.startsWith('plugin:') ? key.slice(7) : null);
+
+// Column types: how a value renders, sorts and aligns.
+const COLUMN_TYPES = {
+  text: { sortValue: (v) => String(v ?? ''), cell: (v) => esc(v) },
+  number: { align: 'r', sortValue: (v) => Number(v) || 0, cell: (v) => (typeof v === 'number' ? fmt.format(v) : esc(v)) },
+  date: { sortValue: (v) => Date.parse(v) || 0, cell: (v) => `<span data-tip="${esc(esc(dateStr(v)))}">${rel(v)}</span>` },
+  link: { sortValue: (v) => String(v ?? ''), cell: (v, col, row) => (col.href && row[col.href] ? `<a href="${href(row[col.href])}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v)) },
+};
+function sortRows(rows, col, dir) {
+  const value = COLUMN_TYPES[col.type || 'text'].sortValue;
+  return [...rows].sort((a, b) => {
+    const x = value(a[col.key]), y = value(b[col.key]);
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir;
+  });
+}
+// Headers marked <th data-sort="key"> toggle the panel's sort; a new column starts descending.
+function bindSort(root, panel, onChange) {
+  root.querySelectorAll('th[data-sort]').forEach((th) => (th.onclick = () => {
+    const cur = ui.sort[panel];
+    ui.sort[panel] = { key: th.dataset.sort, dir: cur?.key === th.dataset.sort ? -cur.dir : -1 };
+    onChange(ui.sort[panel]);
+  }));
+}
+const sortArrow = (panel, key) => (ui.sort[panel]?.key === key ? (ui.sort[panel].dir > 0 ? ' ↑' : ' ↓') : '');
+
+// Items per day over the last `days` days. segs(itemsOfDay) -> [{ v, cls, name }]
+function dailyChart(el, items, getTime, days, segs, height = 150) {
+  const from = new Date(now - (days - 1) * D);
+  from.setHours(0, 0, 0, 0);
+  const buckets = bucketize(items, getTime, from.getTime(), from.getTime() + days * D, D, segs).map((x) => ({ ...x, label: dayStr(x.t0) }));
+  columns(el, buckets, { height });
+}
 // Re-render one panel, keeping focus and caret in its search box.
 function rerender(panel) {
   const a = document.activeElement;
@@ -250,14 +293,15 @@ function rerender(panel) {
 }
 
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-facet],[data-unfacet],[data-clearall],[data-copylink],[data-more],[data-export]');
+  const t = e.target.closest('[data-facet],[data-apply],[data-unfacet],[data-clearall],[data-copylink],[data-more],[data-export]');
   if (!t) return;
   if (t.dataset.export) { downloadCsv(t.dataset.export); return; }
   const panel = t.dataset.panel || t.dataset.clearall || t.dataset.copylink || t.dataset.more;
   if (t.dataset.facet) setFacet(panel, t.dataset.facet, t.dataset.key, t.dataset.set !== '1');
+  else if (t.dataset.apply) { ui.filters[panel] = JSON.parse(t.dataset.apply); filtersChanged(panel); }
   else if (t.dataset.unfacet) setFacet(panel, t.dataset.unfacet, null);
-  else if (t.dataset.clearall) { delete ui.f[panel]; delete ui.q[panel]; setFacet(panel, '_', null); }
-  else if (t.dataset.more) { ui.all[panel] = !ui.all[panel]; rerender(panel); }
+  else if (t.dataset.clearall) clearFilters(panel);
+  else if (t.dataset.more) { ui.expanded[panel] = !ui.expanded[panel]; rerender(panel); }
   else if (t.dataset.copylink) {
     ui.focus = panel;
     writeHash();
@@ -270,11 +314,8 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('input', (e) => {
   const panel = e.target.dataset?.search;
   if (!panel) return;
-  ui.q[panel] = e.target.value;
-  ui.all[panel] = false;
-  ui.focus = panel;
-  writeHash();
-  rerender(panel);
+  ui.queries[panel] = e.target.value;
+  filtersChanged(panel);
 });
 addEventListener('hashchange', () => { readHash(); renderAll(); });
 
@@ -290,10 +331,10 @@ function sourceState(key) {
 
 function renderShell() {
   $('#demo-tag').hidden = !snap.demo;
-  const chipFor = [['actions', 'actions', 'Actions'], ['jira', 'jira', 'Jira'], ['dismissals', 'ghas', 'GHAS'], ['sonar', 'sonar', 'Sonar'],
-    ...Object.keys(snap.sources).filter((k) => k.startsWith('plugin:')).map((k) => [k, k.slice(7), snap.sources[k].title || k.slice(7)])];
+  const sourceChips = [['actions', 'actions', 'Actions'], ['jira', 'jira', 'Jira'], ['dismissals', 'ghas', 'GHAS'], ['sonar', 'sonar', 'Sonar'],
+    ...Object.keys(snap.sources).map(pluginIdOf).filter(Boolean).map((id) => [pluginKey(id), id, snap.sources[pluginKey(id)].title || id])];
   const a = snap.auth || {};
-  let chips = chipFor
+  let chips = sourceChips
     .map(([k, panel, n]) => { const st = sourceState(k); return st ? `<button type="button" class="chip" data-goto="${esc(panel)}" data-tip="${esc(`<b>${esc(n)}</b><br>${esc(st.text)}`)}"><i class="dot ${st.cls}"></i>${esc(n)}</button>` : ''; })
     .join('');
   if (a.enabled) {
@@ -350,7 +391,7 @@ function feedRow(i) {
   return `<div class="feed-item ${i.level}${i.muted ? ' is-muted' : ''}">
       <span class="lvl ${i.level}">${ICON[i.level]}${LEVEL_LABEL[i.level]}</span>
       <div><div class="fi-title">${esc(i.title)}</div>${i.detail ? `<div class="fi-detail">${esc(i.detail)}</div>` : ''}</div>
-      <span class="src-tag">${esc(SRC_LABEL[i.source] || snap.sources[`plugin:${i.source}`]?.title || i.source)}</span>
+      <span class="src-tag">${esc(SRC_LABEL[i.source] || snap.sources[pluginKey(i.source)]?.title || i.source)}</span>
       <span class="fi-actions">${i.url ? `<a class="small" href="${href(i.url)}" target="_blank" rel="noopener">Open ↗</a>` : ''}${muted}</span>
     </div>`;
 }
@@ -386,7 +427,7 @@ document.addEventListener('click', async (e) => {
   const item = snap.feed.find((i) => i.id === b.dataset.id);
   if (!item) return;
   b.disabled = true;
-  const body = action === 'restore' ? { id: item.id } : { id: item.id, title: item.title, ...(action === 'snooze' ? { hours: 24 } : {}) };
+  const body = action === 'restore' ? { id: item.id } : { id: item.id, title: item.title };
   await post(`/api/feed/${action}`, body);
   poll();
 });
@@ -425,7 +466,7 @@ function renderKpis() {
     const open = j.issues.filter((i) => i.category !== 'done');
     const wk = j.issues.filter((i) => now - Date.parse(i.created) <= 7 * D).length;
     const un = open.filter((i) => !i.assignee).length;
-    tiles.push(kpi('Open tickets', fmt.format(open.length), `+${wk} new in 7d${un ? ` · <span class="bad kpi-link" data-panel="jira" data-facet="assignee" data-key="Unassigned" data-set="1" data-tip="Show unassigned tickets">${un} unassigned</span>` : ''}`, 'jira'));
+    tiles.push(kpi('Open tickets', fmt.format(open.length), `+${wk} new in 7d${un ? ` · <span class="bad kpi-link" data-panel="jira" data-apply="${esc(JSON.stringify({ state: 'Open', assignee: 'Unassigned' }))}" data-tip="Show open unassigned tickets">${un} unassigned</span>` : ''}`, 'jira'));
   }
   const g = snap.sources.dismissals?.data;
   if (g) {
@@ -438,8 +479,8 @@ function renderKpis() {
     tiles.push(kpi('Sonar projects', fmt.format(sum('projects')), `${fmt.format(sum('stale'))} not analyzed in ${s.staleDays}d`, 'sonar'));
   }
   for (const [k, src] of Object.entries(snap.sources)) {
-    if (!k.startsWith('plugin:') || !src.data) continue;
-    for (const m of src.data.metrics.filter((x) => x.kpi)) tiles.push(kpi(m.label, typeof m.value === 'number' ? fmt.format(m.value) : esc(m.value), esc(m.hint || src.title || ''), k.slice(7)));
+    if (!pluginIdOf(k) || !src.data) continue;
+    for (const m of src.data.metrics.filter((x) => x.kpi)) tiles.push(kpi(m.label, typeof m.value === 'number' ? fmt.format(m.value) : esc(m.value), esc(m.hint || src.title || ''), pluginIdOf(k)));
   }
   $('#kpis').innerHTML = tiles.join('');
   $('#kpis').hidden = !tiles.length;
@@ -573,6 +614,7 @@ function renderActions() {
 /* ---------- jira ---------- */
 const CAT = { new: ['bg-s1', 'To do'], indeterminate: ['bg-s2', 'In progress'], done: ['bg-s3', 'Done'] };
 FACETS.jira = {
+  state: { label: 'State', get: (i) => (i.category === 'done' ? 'Done' : 'Open') },
   status: { label: 'Status', get: (i) => i.status },
   assignee: { label: 'Assignee', get: (i) => i.assignee || 'Unassigned' },
   priority: { label: 'Priority', get: (i) => i.priority || 'None' },
@@ -605,11 +647,8 @@ function renderJira() {
     sort: (a, b) => (order[catOf.get(a.key)] ?? 3) - (order[catOf.get(b.key)] ?? 3) || b.count - a.count,
   });
 
-  const { key: sk, dir } = ui.jiraSort;
-  const list = [...items].sort((a, b) => {
-    const va = a[sk] ?? '', vb = b[sk] ?? '';
-    return (sk === 'created' || sk === 'updated' ? Date.parse(va) - Date.parse(vb) : String(va).localeCompare(String(vb))) * dir;
-  });
+  const sort = ui.sort.jira;
+  const list = sortRows(items, { key: sort.key, type: sort.key === 'created' || sort.key === 'updated' ? 'date' : 'text' }, sort.dir);
   EXPORT.jira = () => ({
     name: 'jira',
     rows: list,
@@ -618,8 +657,8 @@ function renderJira() {
       ['Labels', (i) => (i.labels || []).join(' ')], ['Created', (i) => i.created], ['Updated', (i) => i.updated], ['Resolved', (i) => i.resolved], ['URL', (i) => i.url]],
   });
   const LIMIT = 25;
-  const shown = ui.all.jira ? list : list.slice(0, LIMIT);
-  const arrow = (k) => (sk === k ? (dir > 0 ? ' ↑' : ' ↓') : '');
+  const shown = ui.expanded.jira ? list : list.slice(0, LIMIT);
+  const arrow = (k) => sortArrow('jira', k);
 
   $('#jira-body').innerHTML = `${g.banner}${d.truncated ? '<div class="alert warn">Result capped by <code>jira.maxIssues</code>; numbers cover the fetched issues only.</div>' : ''}
     ${d.hidden ? `<div class="muted small rules-note">${plural(d.hidden, 'issue')} hidden by config rules</div>` : ''}
@@ -628,7 +667,8 @@ function renderJira() {
       <div><h3>By status</h3>${legend(Object.values(CAT))}${statusBars}</div>
       <div><h3>Created per day · ${d.lookbackDays}d</h3><div class="chart" id="jira-chart"></div></div>
     </div>
-    <div class="grid-3 breakdowns">
+    <div class="grid-4 breakdowns">
+      <div><h3>State</h3>${facetBars('jira', 'state', d.issues)}</div>
       <div><h3>Assignee</h3>${facetBars('jira', 'assignee', d.issues)}</div>
       <div><h3>Priority</h3>${facetBars('jira', 'priority', d.issues)}</div>
       <div><h3>Type</h3>${facetBars('jira', 'type', d.issues)}</div>
@@ -649,19 +689,10 @@ function renderJira() {
           <td class="r num" data-tip="${esc('Created ' + esc(dateStr(i.created)))}">${rel(i.created).replace(' ago', '')}</td>
           <td class="r">${rel(i.updated)}${isStale ? '<span class="stale-tag">stale</span>' : ''}</td></tr>`;
       }).join('') || '<tr><td colspan="7" class="empty">No tickets match</td></tr>'}</tbody></table></div>
-    ${list.length > LIMIT ? `<button class="link-btn" type="button" data-more="jira">${ui.all.jira ? 'Show fewer' : `Show all ${fmt.format(list.length)}`}</button>` : ''}`;
+    ${list.length > LIMIT ? `<button class="link-btn" type="button" data-more="jira">${ui.expanded.jira ? 'Show fewer' : `Show all ${fmt.format(list.length)}`}</button>` : ''}`;
 
-  const days = d.lookbackDays;
-  const from = new Date(now - (days - 1) * D); from.setHours(0, 0, 0, 0);
-  const b = bucketize(items, (i) => i.created, from.getTime(), from.getTime() + days * D, D, (xs) => [{ v: xs.length, cls: 'f-s1', name: 'Created' }]).map((x) => ({ ...x, label: dayStr(x.t0) }));
-  columns($('#jira-chart'), b, { height: 170 });
-
-  $('#jira-body').querySelectorAll('th.sortable').forEach((th) => (th.onclick = () => {
-    const k = th.dataset.sort;
-    ui.jiraSort = { key: k, dir: ui.jiraSort.key === k ? -ui.jiraSort.dir : -1 };
-    store.set('jiraSort', ui.jiraSort);
-    renderJira();
-  }));
+  dailyChart($('#jira-chart'), items, (i) => i.created, d.lookbackDays, (xs) => [{ v: xs.length, cls: 'f-s1', name: 'Created' }], 170);
+  bindSort($('#jira-body'), 'jira', (s) => { store.set('jiraSort', s); renderJira(); });
 }
 RENDER.jira = renderJira;
 
@@ -689,7 +720,7 @@ function renderGhas() {
   const since = now - ui.ghasWin * D;
   const base = d.orgs.flatMap((o) => o.items.filter((i) => Date.parse(i.at) >= since).map((i) => (i.org ? i : { ...i, org: o.org })));
   const items = applyFilters('ghas', base).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-  const orgSel = ui.f.ghas?.org;
+  const orgSel = ui.filters.ghas?.org;
   const sel = orgSel ? d.orgs.filter((o) => o.org === orgSel) : d.orgs;
   const errs = sel.flatMap((o) => Object.entries(o.errors).map(([t, e]) => `${o.org} · ${TOOL[t]?.[2] || t}: ${e}`));
   const hidden = sel.reduce((n, o) => n + (o.hidden || 0), 0);
@@ -704,7 +735,7 @@ function renderGhas() {
     : '';
 
   const forTools = applyFilters('ghas', base, 'tool');
-  const toolSel = ui.f.ghas?.tool;
+  const toolSel = ui.filters.ghas?.tool;
   const minis = d.tools.filter((t) => TOOL[t]).map((t) => {
     const failed = sel.some((o) => o.errors[t]);
     return `<div class="mini clickable${toolSel === t ? ' active' : ''}" data-panel="ghas" data-facet="tool" data-key="${esc(t)}" role="button" tabindex="0" aria-pressed="${toolSel === t}">
@@ -720,7 +751,7 @@ function renderGhas() {
       ['Secret type', (i) => i.secretType], ['Validity', (i) => i.validity], ['Package', (i) => i.package], ['Rule', (i) => i.ruleId], ['URL', (i) => i.url]],
   });
   const LIMIT = 15;
-  const shown = ui.all.ghas ? items : items.slice(0, LIMIT);
+  const shown = ui.expanded.ghas ? items : items.slice(0, LIMIT);
 
   $('#ghas-body').innerHTML = `${g.banner}${tabs}
     ${errs.length ? `<div class="alert warn">${errs.map(esc).join('<br>')}</div>` : ''}
@@ -747,12 +778,10 @@ function renderGhas() {
         <td class="hide-sm mono">${esc(i.repo)}</td>
         <td>${esc(i.by || '—')}</td>
         <td class="small"${i.comment ? ` data-tip="${esc('“' + esc(i.comment) + '”')}"` : ''}>${esc(reasonLabel(i.reason))}${i.comment ? ' <span class="muted">💬</span>' : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No dismissals match</td></tr>'}</tbody></table></div>
-    ${items.length > LIMIT ? `<button class="link-btn" type="button" data-more="ghas">${ui.all.ghas ? 'Show fewer' : `Show all ${fmt.format(items.length)}`}</button>` : ''}`;
+    ${items.length > LIMIT ? `<button class="link-btn" type="button" data-more="ghas">${ui.expanded.ghas ? 'Show fewer' : `Show all ${fmt.format(items.length)}`}</button>` : ''}`;
 
-  const from = new Date(now - (ui.ghasWin - 1) * D); from.setHours(0, 0, 0, 0);
   const tools = d.tools.filter((t) => TOOL[t]);
-  const b = bucketize(items, (i) => i.at, from.getTime(), from.getTime() + ui.ghasWin * D, D, (xs) => tools.map((t) => ({ v: xs.filter((x) => x.tool === t).length, cls: TOOL[t][1], name: TOOL[t][2] }))).map((x) => ({ ...x, label: dayStr(x.t0) }));
-  columns($('#ghas-chart'), b, { height: 150 });
+  dailyChart($('#ghas-chart'), items, (i) => i.at, ui.ghasWin, (xs) => tools.map((t) => ({ v: xs.filter((x) => x.tool === t).length, cls: TOOL[t][1], name: TOOL[t][2] })));
 }
 RENDER.ghas = renderGhas;
 
@@ -787,30 +816,21 @@ function renderSonar() {
     columns: [['Organization', (o) => o.key], ['Projects', (o) => cell(o.projects)], [`Not analyzed in ${d.staleDays}d`, (o) => cell(o.stale)],
       ['Never analyzed', (o) => cell(o.neverAnalyzed)], ['Failing quality gate', (o) => cell(o.failingGate)], ['URL', (o) => o.url]],
   });
+  EXPORT['sonar-tokens'] = () => ({
+    name: 'sonar-tokens',
+    rows: d.tokens || [],
+    columns: [['Name', (t) => t.name], ['Last used', (t) => t.lastConnectionDate], ['Created', (t) => t.createdAt], ['Expires', (t) => t.expirationDate]],
+  });
   $('#sonar-body').innerHTML = `${g.banner}<div class="sub-h" style="margin-top:0"><h3>Organizations</h3>${d.orgs.length ? exportBtn('sonar') : ''}</div>${orgs}
-    ${d.tokens ? `<div class="sub-h"><h3>Tokens on this account</h3></div>
+    ${d.tokens ? `<div class="sub-h"><h3>Tokens on this account</h3>${d.tokens.length ? exportBtn('sonar-tokens') : ''}</div>
     <div class="tbl-wrap"><table><thead><tr><th>Name</th><th>Last used</th><th>Created</th><th class="r">Expires</th></tr></thead>
     <tbody>${toks || '<tr><td colspan="4" class="empty">None</td></tr>'}</tbody></table></div>` : ''}`;
 }
 
 /* ---------- plugins ---------- */
-const pluginSort = {};
-
 function pluginCell(col, row) {
   const v = row[col.key];
-  if (v == null || v === '') return '<span class="muted">—</span>';
-  if (col.type === 'number') return typeof v === 'number' ? fmt.format(v) : esc(v);
-  if (col.type === 'date') return `<span data-tip="${esc(esc(dateStr(v)))}">${rel(v)}</span>`;
-  if (col.type === 'link' && col.href && row[col.href]) return `<a href="${href(row[col.href])}" target="_blank" rel="noopener">${esc(v)}</a>`;
-  return esc(v);
-}
-
-function sortRows(rows, col, dir) {
-  const val = (r) => (col.type === 'date' ? Date.parse(r[col.key]) || 0 : col.type === 'number' ? Number(r[col.key]) || 0 : String(r[col.key] ?? ''));
-  return [...rows].sort((a, b) => {
-    const x = val(a), y = val(b);
-    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir;
-  });
+  return v == null || v === '' ? '<span class="muted">—</span>' : COLUMN_TYPES[col.type].cell(v, col, row);
 }
 
 function pluginSection(id) {
@@ -826,7 +846,7 @@ function pluginSection(id) {
 }
 
 function renderPlugin(id) {
-  const src = snap.sources[`plugin:${id}`];
+  const src = snap.sources[pluginKey(id)];
   if (!src) return;
   const sec = pluginSection(id);
   sec.querySelector('h2').textContent = src.title || id;
@@ -846,10 +866,9 @@ function renderPlugin(id) {
     const cols = d.table.columns;
     FACETS[id] = Object.fromEntries(cols.filter((c) => c.facet).map((c) => [c.key, { label: c.label, get: (r) => r[c.key] ?? '—' }]));
     SEARCH[id] = (r) => cols.map((c) => r[c.key] ?? '').join(' ');
-    const s = pluginSort[id];
-    const sortCol = s && cols.find((c) => c.key === s.key);
+    const sortCol = cols.find((c) => c.key === ui.sort[id]?.key);
     rows = applyFilters(id, d.table.rows);
-    if (sortCol) rows = sortRows(rows, sortCol, s.dir);
+    if (sortCol) rows = sortRows(rows, sortCol, ui.sort[id].dir);
     EXPORT[id] = () => ({ name: id, rows, columns: cols.map((c) => [c.label, (r) => r[c.key]]) });
 
     if (d.chart) html += `<h3>${esc(d.chart.title || 'Per day')}</h3><div class="chart plugin-chart"></div>`;
@@ -857,32 +876,23 @@ function renderPlugin(id) {
     if (facetCols.length) html += `<div class="grid-4 breakdowns">${facetCols.map((c) => `<div><h3>${esc(c.label)}</h3>${facetBars(id, c.key, d.table.rows)}</div>`).join('')}</div>`;
 
     const LIMIT = 25;
-    const shown = ui.all[id] ? rows : rows.slice(0, LIMIT);
-    const arrow = (k) => (s?.key === k ? (s.dir > 0 ? ' ↑' : ' ↓') : '');
+    const shown = ui.expanded[id] ? rows : rows.slice(0, LIMIT);
     html += `${filterBar(id, rows.length, 'row')}${d.table.truncated ? '<div class="muted small rules-note">Showing the first 5,000 rows returned by the plugin.</div>' : ''}
       <div class="tbl-wrap"><table>
-        <thead><tr>${cols.map((c) => `<th class="sortable${c.type === 'number' ? ' r' : ''}" data-plugin-sort="${esc(c.key)}">${esc(c.label)}${arrow(c.key)}</th>`).join('')}</tr></thead>
-        <tbody>${shown.map((r) => `<tr>${cols.map((c) => `<td${c.type === 'number' ? ' class="r num"' : ''}>${pluginCell(c, r)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${cols.length}" class="empty">No rows match</td></tr>`}</tbody>
+        <thead><tr>${cols.map((c) => `<th class="sortable ${COLUMN_TYPES[c.type].align || ''}" data-sort="${esc(c.key)}">${esc(c.label)}${sortArrow(id, c.key)}</th>`).join('')}</tr></thead>
+        <tbody>${shown.map((r) => `<tr>${cols.map((c) => `<td class="${COLUMN_TYPES[c.type].align ? 'r num' : ''}">${pluginCell(c, r)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${cols.length}" class="empty">No rows match</td></tr>`}</tbody>
       </table></div>
-      ${rows.length > LIMIT ? `<button class="link-btn" type="button" data-more="${esc(id)}">${ui.all[id] ? 'Show fewer' : `Show all ${fmt.format(rows.length)}`}</button>` : ''}`;
+      ${rows.length > LIMIT ? `<button class="link-btn" type="button" data-more="${esc(id)}">${ui.expanded[id] ? 'Show fewer' : `Show all ${fmt.format(rows.length)}`}</button>` : ''}`;
   }
   body.innerHTML = html || '<div class="empty">This plugin returned no metrics or table.</div>';
 
-  if (d.chart) {
-    const from = new Date(now - (d.chart.days - 1) * D); from.setHours(0, 0, 0, 0);
-    const b = bucketize(rows, (r) => r[d.chart.key], from.getTime(), from.getTime() + d.chart.days * D, D, (xs) => [{ v: xs.length, cls: 'f-s1', name: 'Rows' }]).map((x) => ({ ...x, label: dayStr(x.t0) }));
-    columns(body.querySelector('.plugin-chart'), b, { height: 150 });
-  }
-  body.querySelectorAll('[data-plugin-sort]').forEach((th) => (th.onclick = () => {
-    const k = th.dataset.pluginSort;
-    pluginSort[id] = { key: k, dir: pluginSort[id]?.key === k ? -pluginSort[id].dir : -1 };
-    renderPlugin(id);
-  }));
+  if (d.chart) dailyChart(body.querySelector('.plugin-chart'), rows, (r) => r[d.chart.key], d.chart.days, (xs) => [{ v: xs.length, cls: 'f-s1', name: 'Rows' }]);
+  bindSort(body, id, () => renderPlugin(id));
   RENDER[id] = () => renderPlugin(id);
 }
 
 function renderPlugins() {
-  const ids = Object.keys(snap.sources).filter((k) => k.startsWith('plugin:')).map((k) => k.slice(7));
+  const ids = Object.keys(snap.sources).map(pluginIdOf).filter(Boolean);
   document.querySelectorAll('section.plugin').forEach((s) => { if (!ids.includes(s.dataset.panelId)) s.remove(); });
   ids.forEach(renderPlugin);
 }

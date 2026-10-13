@@ -4,6 +4,9 @@
 // See README "Plugins" for the result shape and the ctx object.
 
 const path = require('path');
+const { request, nextLink } = require('./http');
+const { githubHeaders } = require('./connectors/actions');
+const { authHeaders: jiraHeaders } = require('./connectors/jira');
 
 const LEVELS = ['critical', 'warn', 'info', 'good'];
 const TYPES = ['text', 'number', 'date', 'link'];
@@ -28,6 +31,7 @@ function normalizeTable(t) {
   check(Array.isArray(t.rows), 'table.rows must be a list');
   const columns = t.columns.map((c, i) => {
     check(c && isStr(c.key), `table.columns[${i}].key must be a non-empty string`);
+    check(!(c.facet && c.key === 'q'), `table.columns[${i}].key "q" is reserved for search`);
     check(c.type == null || TYPES.includes(c.type), `table.columns[${i}].type must be one of ${TYPES.join(', ')}`);
     return { key: c.key, label: c.label ?? c.key, type: c.type ?? 'text', facet: c.facet === true, href: c.href ?? null };
   });
@@ -109,26 +113,37 @@ function loadPlugins(entries, baseDir) {
   return out;
 }
 
+// GET with a platform's credentials. Absolute URLs must stay on the platform's host so
+// credentials are never sent elsewhere (pagination links are absolute).
+function authedGet(name, baseUrl, headers) {
+  const base = String(baseUrl || '').replace(/\/$/, '');
+  return async (p) => {
+    const absolute = /^https?:\/\//i.test(p);
+    if (absolute && !p.startsWith(base + '/')) throw new Error(`ctx.api.${name}.get only accepts paths or URLs on ${base}`);
+    return (await request(absolute ? p : base + p, { headers, platform: name })).data;
+  };
+}
+
 // What a plugin's collect(ctx) receives. Network calls go through the shared client, so proxies apply.
 function createContext({ cfg, secrets, store, options, sources }) {
-  const { request, nextLink } = require('./http');
-  const { gh } = require('./connectors/actions');
-  const { authHeaders } = require('./connectors/jira');
-  const getter = (base, headers, platform) => async (p) => (await request(p.startsWith('http') ? p : base.replace(/\/$/, '') + p, { headers, platform })).data;
   return {
     options,
     sources,
     config: cfg,
     secrets,
     secret: (ref) => store.resolveRef(ref),
-    request,
+    // Without opts.platform, the plugin's `platform` option picks the proxy.
+    request: (url, opts = {}) => request(url, { ...opts, platform: opts.platform || options.platform || 'default' }),
     nextLink,
     api: {
-      github: { get: async (p) => (await gh(cfg, secrets.github).get(p)).data },
-      sonar: { get: getter(cfg.sonar.url, { Authorization: `Bearer ${secrets.sonar}` }, 'sonar') },
-      jira: { get: getter(cfg.jira.baseUrl, authHeaders(cfg.jira, secrets), 'jira') },
+      github: { get: authedGet('github', cfg.github.apiUrl, githubHeaders(secrets.github)) },
+      sonar: { get: authedGet('sonar', cfg.sonar.url, { Authorization: `Bearer ${secrets.sonar}` }) },
+      jira: { get: authedGet('jira', cfg.jira.baseUrl, jiraHeaders(cfg.jira, secrets)) },
     },
   };
 }
 
-module.exports = { runPlugin, loadPlugins, createContext };
+const pluginKey = (id) => `plugin:${id}`;
+const pluginIdOf = (key) => (key.startsWith('plugin:') ? key.slice(7) : null);
+
+module.exports = { runPlugin, loadPlugins, createContext, pluginKey, pluginIdOf };

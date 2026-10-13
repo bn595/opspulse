@@ -27,9 +27,11 @@ function compact(base, i) {
   };
 }
 
+const isCloud = (jc) => jc.deployment !== 'datacenter';
+
 // Cloud: email + API token (Basic). Data Center: personal access token (Bearer).
 function authHeaders(jc, secrets) {
-  return jc.deployment !== 'datacenter'
+  return isCloud(jc)
     ? { Authorization: 'Basic ' + Buffer.from(`${secrets.jiraEmail}:${secrets.jira}`).toString('base64') }
     : { Authorization: `Bearer ${secrets.jira}` };
 }
@@ -40,7 +42,7 @@ async function collect(cfg, secrets) {
   if (!jc.jql) throw new Error('jira.jql is not set');
   if (!secrets.jira) throw new Error('No Jira token configured (jira.token)');
   const base = jc.baseUrl.replace(/\/$/, '');
-  const cloud = jc.deployment !== 'datacenter';
+  const cloud = isCloud(jc);
   if (cloud && !secrets.jiraEmail) throw new Error('Jira Cloud needs jira.email alongside the API token');
 
   const headers = authHeaders(jc, secrets);
@@ -52,14 +54,12 @@ async function collect(cfg, secrets) {
     throw new Error(e.status === 401 || e.status === 403 || e.status === 404 ? `Jira rejected the credentials (${e.status}) — check jira.email / jira.token` : e.message);
   }
 
-  const keep = rules.compile(jc, 'jira');
-  let hidden = 0;
+  const issues = [];
+  const filter = rules.filter(jc, 'jira');
   const add = (i) => {
     const c = compact(base, i);
-    if (keep && !keep({ ...c, raw: i })) { hidden++; return; }
-    issues.push(c);
+    if (filter.keep({ ...c, raw: i })) issues.push(c);
   };
-  const issues = [];
   let truncated = false;
   if (cloud) {
     let token = null;
@@ -90,7 +90,7 @@ async function collect(cfg, secrets) {
     lookbackDays: jc.lookbackDays,
     staleDays: jc.staleDays,
     truncated,
-    hidden,
+    hidden: filter.hidden,
     searchUrl: `${base}/issues/?jql=${encodeURIComponent(jc.jql)}`,
     issues,
   };

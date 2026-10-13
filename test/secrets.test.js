@@ -44,8 +44,9 @@ async function signIn(store) {
   await store.completeBrowserLogin({ code: 'auth-code', state });
 }
 
-test('env, file and literal references resolve without Key Vault', async () => {
+test('env, file and literal references resolve without Key Vault', async (t) => {
   process.env.OPSPULSE_TEST_GH = 'gh-from-env';
+  t.after(() => delete process.env.OPSPULSE_TEST_GH);
   const cfg = setup({ github: { token: 'env:OPSPULSE_TEST_GH' }, sonar: { token: 'file:sonar.txt' }, jira: { token: 'literal-jira', email: 'ann@contoso.com' } });
   fs.writeFileSync(path.join(cfg._dir, 'sonar.txt'), 'sonar-from-file\n');
 
@@ -101,6 +102,7 @@ test('sign-in callbacks with an unknown state are rejected', async () => {
 test('status output never contains secret values or proxy credentials', async (t) => {
   const ms = await fakeMicrosoft(t, { 'jira-token': 'jira-secret' });
   process.env.OPSPULSE_TEST_PROXY = 'http://svc:proxy-password@proxy.corp:8080';
+  t.after(() => delete process.env.OPSPULSE_TEST_PROXY);
   const cfg = setup({ jira: { token: 'keyvault:jira-token' }, network: { proxies: { github: 'env:OPSPULSE_TEST_PROXY' } }, secrets: { azureKeyVault: { vaultUrl: ms.vaultUrl, authority: ms.authority, auth: 'browser' } } });
   const store = newStore(cfg);
   await signIn(store);

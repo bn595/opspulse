@@ -20,7 +20,7 @@ test('a platform proxy forwards plain-HTTP requests with Basic proxy credentials
   const r = await client.request('http://sonar.example:9000/api/x?y=1', { platform: 'sonar', retries: 0 });
 
   assert.deepEqual(r.data, { ok: true });
-  assert.deepEqual(seen, [{ url: 'http://sonar.example:9000/api/x?y=1', auth: 'Basic ' + Buffer.from('svc:p@ss').toString('base64') }]);
+  assert.deepEqual(seen, [{ url: 'http://sonar.example:9000/api/x?y=1', auth: 'Basic c3ZjOnBAc3M=' }]); // svc:p@ss, decoded from svc:p%40ss
 });
 
 test('HTTPS through a proxy that refuses CONNECT fails once with a readable message', async (t) => {

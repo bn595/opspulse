@@ -52,4 +52,11 @@ function compile(section, where) {
   return (item) => (!inc.length || inc.some((f) => f(item))) && !exc.some((f) => f(item));
 }
 
-module.exports = { compile };
+// Keeps items that pass a section's rules and counts the ones it hides.
+function filter(section, where) {
+  const pred = compile(section, where);
+  const f = { hidden: 0, keep: (item) => { if (!pred || pred(item)) return true; f.hidden++; return false; } };
+  return f;
+}
+
+module.exports = { compile, filter };

@@ -4,24 +4,13 @@
   "description": "A local, zero-dependency ops dashboard: GitHub Actions job health, Jira backlog, GHAS dismissals and SonarQube Cloud hygiene in one page.",
   "license": "MIT",
   "main": "src/server.js",
-  "bin": {
-    "opspulse": "src/server.js"
-  },
+  "bin": { "opspulse": "src/server.js" },
   "scripts": {
     "start": "node src/server.js",
     "demo": "node src/server.js --demo",
     "check": "node scripts/check-config.js",
     "test": "node --test"
   },
-  "engines": {
-    "node": ">=18.17"
-  },
-  "keywords": [
-    "dashboard",
-    "github-actions",
-    "jira",
-    "sonarqube",
-    "ghas",
-    "devops"
-  ]
+  "engines": { "node": ">=18.17" },
+  "keywords": ["dashboard", "github-actions", "jira", "sonarqube", "ghas", "devops"]
 }

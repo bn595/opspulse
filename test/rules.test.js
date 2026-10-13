@@ -56,3 +56,14 @@ test('an invalid regular expression names the offending rule', () => {
 test('rules must be a list', () => {
   assert.throws(() => rules.compile({ exclude: { by: 'x' } }, 'jira'), /jira\.exclude must be a list of rules/);
 });
+
+test('a filter keeps matching items and counts the ones it hides', () => {
+  const f = rules.filter({ exclude: [{ by: '*[bot]' }] }, 'test');
+  assert.deepEqual(ITEMS.filter(f.keep).map((i) => i.id), [2, 3]);
+  assert.equal(f.hidden, 1);
+});
+
+test('a filter without rules keeps everything', () => {
+  const f = rules.filter(undefined, 'test');
+  assert.deepEqual([ITEMS.filter(f.keep).length, f.hidden], [3, 0]);
+});

