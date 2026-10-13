@@ -3,6 +3,7 @@
 
 const { nextLink } = require('../http');
 const { gh } = require('./actions');
+const rules = require('../rules');
 
 const TOOLS = {
   'code-scanning': {
@@ -15,6 +16,8 @@ const TOOLS = {
       repo: a.repository?.full_name,
       title: a.rule?.description || a.rule?.id || 'Code scanning alert',
       severity: a.rule?.security_severity_level || a.rule?.severity || null,
+      ruleId: a.rule?.id || null,
+      toolName: a.tool?.name || null,
       url: a.html_url,
     }),
   },
@@ -28,6 +31,8 @@ const TOOLS = {
       repo: a.repository?.full_name,
       title: a.secret_type_display_name || a.secret_type || 'Secret',
       severity: null,
+      secretType: a.secret_type || null,
+      validity: a.validity || null,
       url: a.html_url,
     }),
   },
@@ -41,14 +46,17 @@ const TOOLS = {
       repo: a.repository?.full_name,
       title: a.security_advisory?.summary || a.dependency?.package?.name || 'Dependabot alert',
       severity: a.security_vulnerability?.severity || a.security_advisory?.severity || null,
+      package: a.dependency?.package?.name || null,
+      ecosystem: a.dependency?.package?.ecosystem || null,
       url: a.html_url,
     }),
   },
 };
 
-async function fetchTool(api, org, tool, dc, sinceMs) {
+async function fetchTool(api, org, tool, dc, sinceMs, keep) {
   const def = TOOLS[tool];
   const out = [];
+  let hidden = 0;
   let url = def.path(org);
   let pages = 0;
   let truncated = false;
@@ -60,14 +68,16 @@ async function fetchTool(api, org, tool, dc, sinceMs) {
       // Sorted by updated_at desc, and dismissing an alert updates it, so stop at the window edge.
       if (Date.parse(a.updated_at) < sinceMs) { olderSeen = true; break; }
       if (tool === 'secret-scanning' && !dc.secretResolutions.includes(a.resolution)) continue;
-      const d = def.map(a);
-      if (d.at && Date.parse(d.at) >= sinceMs) out.push({ tool, ...d });
+      const d = { tool, org, ...def.map(a) };
+      if (!d.at || Date.parse(d.at) < sinceMs) continue;
+      if (keep && !keep({ ...d, raw: a })) { hidden++; continue; }
+      out.push(d);
     }
     if (olderSeen) break;
     url = nextLink(res.headers);
     if (url && ++pages >= dc.maxPagesPerTool) { truncated = true; break; }
   }
-  return { items: out, truncated };
+  return { items: out, truncated, hidden };
 }
 
 async function collect(cfg, secrets) {
@@ -76,15 +86,17 @@ async function collect(cfg, secrets) {
   if (!dc.orgs.length) throw new Error('No orgs listed under github.dismissals.orgs');
   const api = gh(cfg, secrets.github);
   const sinceMs = Date.now() - dc.lookbackDays * 86400e3;
+  const keep = rules.compile(dc, 'github.dismissals');
 
   const orgs = await Promise.all(
     dc.orgs.map(async (org) => {
-      const result = { org, items: [], errors: {}, truncated: [] };
+      const result = { org, items: [], errors: {}, truncated: [], hidden: 0 };
       await Promise.all(
         dc.tools.filter((t) => TOOLS[t]).map(async (tool) => {
           try {
-            const r = await fetchTool(api, org, tool, dc, sinceMs);
+            const r = await fetchTool(api, org, tool, dc, sinceMs, keep);
             result.items.push(...r.items);
+            result.hidden += r.hidden;
             if (r.truncated) result.truncated.push(tool);
           } catch (e) {
             result.errors[tool] = e.message;

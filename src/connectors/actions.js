@@ -2,6 +2,7 @@
 // GitHub Actions workflow runs for the configured repositories.
 
 const { request, nextLink } = require('../http');
+const rules = require('../rules');
 
 function gh(cfg, token) {
   const base = cfg.github.apiUrl.replace(/\/$/, '');
@@ -36,8 +37,9 @@ function wanted(filter, wf) {
   return filter.some((f) => f === wf.name || f === file || f === wf.path || String(f) === String(wf.id));
 }
 
-async function fetchRepo(api, entry, ac) {
+async function fetchRepo(api, entry, ac, keep) {
   const repo = entry.repo;
+  let hidden = 0;
   const since = new Date(Date.now() - ac.lookbackHours * 3600e3).toISOString().replace(/\.\d{3}Z$/, '+00:00');
 
   const wfRes = await api.get(`/repos/${repo}/actions/workflows?per_page=100`);
@@ -54,7 +56,10 @@ async function fetchRepo(api, entry, ac) {
     for (const r of res.data.workflow_runs || []) {
       fetched++;
       const wf = byId.get(r.workflow_id);
-      if (wf && (!entry.branch || r.head_branch === entry.branch)) wf.runs.push(compactRun(r));
+      if (!wf || (entry.branch && r.head_branch !== entry.branch)) continue;
+      const run = compactRun(r);
+      if (keep && !keep({ ...run, repo, workflow: wf.name, raw: r })) { hidden++; continue; }
+      wf.runs.push(run);
     }
     url = nextLink(res.headers);
     if (url && fetched >= ac.maxRunsPerRepo) { truncated = true; break; }
@@ -82,6 +87,7 @@ async function fetchRepo(api, entry, ac) {
     label: entry.label || repo,
     url: `${api.base.includes('api.github.com') ? 'https://github.com' : api.base.replace(/\/api\/v3$/, '')}/${repo}/actions`,
     truncated,
+    hidden,
     workflows: [...byId.values()].sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
@@ -91,10 +97,11 @@ async function collect(cfg, secrets) {
   if (!secrets.github) throw new Error('No GitHub token configured (github.token)');
   if (!ac.repos.length) throw new Error('No repos listed under github.actions.repos');
   const api = gh(cfg, secrets.github);
+  const keep = rules.compile(ac, 'github.actions');
   const repos = await Promise.all(
     ac.repos.map(async (entry) => {
       try {
-        return await fetchRepo(api, entry, ac);
+        return await fetchRepo(api, entry, ac, keep);
       } catch (e) {
         return { repo: entry.repo, label: entry.label || entry.repo, error: e.message, workflows: [] };
       }

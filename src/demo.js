@@ -66,20 +66,25 @@ function dismissals(now, r) {
     for (let i = 0; i < count; i++) {
       const tool = ['code-scanning', 'secret-scanning', 'dependabot'][Math.floor(r() * r() * 3.2) % 3];
       const repo = `${org}/${['payments-api', 'web-portal', 'data-pipeline', 'mobile-app', 'infra-tf', 'auth-service'][Math.floor(r() * 6)]}`;
+      const title = titles[tool][Math.floor(r() * titles[tool].length)];
       items.push({
         tool,
+        org,
         at: iso(now - r() ** 1.3 * 30 * 24 * H),
         by: people[Math.floor(r() * r() * people.length)],
         reason: reasons[tool][Math.floor(r() * r() * reasons[tool].length)],
         comment: r() < 0.4 ? 'Reviewed with app team' : '',
         repo,
-        title: titles[tool][Math.floor(r() * titles[tool].length)],
+        title,
         severity: tool === 'secret-scanning' ? null : sev[Math.floor(r() * 4)],
+        secretType: tool === 'secret-scanning' ? title.toLowerCase().replace(/\W+/g, '_') : null,
+        validity: tool === 'secret-scanning' ? ['active', 'inactive', 'unknown'][Math.floor(r() * 3)] : null,
+        package: tool === 'dependabot' ? title.split(' in ').pop() : null,
         url: `https://github.com/${repo}/security`,
       });
     }
     items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-    return { org, items, errors: {}, truncated: [] };
+    return { org, items, errors: {}, truncated: [], hidden: 0 };
   });
   return { lookbackDays: 30, tools: ['code-scanning', 'secret-scanning', 'dependabot'], orgs };
 }

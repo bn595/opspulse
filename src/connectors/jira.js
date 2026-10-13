@@ -3,6 +3,7 @@
 // Data Center uses /rest/api/2/search with a bearer PAT.
 
 const { request } = require('../http');
+const rules = require('../rules');
 
 const FIELDS = ['summary', 'status', 'assignee', 'reporter', 'priority', 'issuetype', 'created', 'updated', 'statuscategorychangedate', 'resolutiondate', 'labels'];
 
@@ -46,6 +47,13 @@ async function collect(cfg, secrets) {
     throw new Error(e.status === 401 || e.status === 403 || e.status === 404 ? `Jira rejected the credentials (${e.status}) — check jira.email / jira.token` : e.message);
   }
 
+  const keep = rules.compile(jc, 'jira');
+  let hidden = 0;
+  const add = (i) => {
+    const c = compact(base, i);
+    if (keep && !keep({ ...c, raw: i })) { hidden++; return; }
+    issues.push(c);
+  };
   const issues = [];
   let truncated = false;
   if (cloud) {
@@ -54,7 +62,7 @@ async function collect(cfg, secrets) {
       const qs = new URLSearchParams({ jql: jc.jql, maxResults: '100', fields: FIELDS.join(',') });
       if (token) qs.set('nextPageToken', token);
       const { data } = await request(`${base}/rest/api/3/search/jql?${qs}`, { headers, platform: 'jira' });
-      for (const i of data.issues || []) issues.push(compact(base, i));
+      for (const i of data.issues || []) add(i);
       token = data.isLast === false || data.nextPageToken ? data.nextPageToken : null;
       if (token && issues.length >= jc.maxIssues) { truncated = true; break; }
     } while (token);
@@ -64,7 +72,7 @@ async function collect(cfg, secrets) {
       const qs = new URLSearchParams({ jql: jc.jql, maxResults: '100', startAt: String(startAt), fields: FIELDS.join(',') });
       const { data } = await request(`${base}/rest/api/2/search?${qs}`, { headers, platform: 'jira' });
       const page = data.issues || [];
-      for (const i of page) issues.push(compact(base, i));
+      for (const i of page) add(i);
       startAt += page.length;
       if (!page.length || startAt >= (data.total ?? 0)) break;
       if (issues.length >= jc.maxIssues) { truncated = true; break; }
@@ -77,6 +85,7 @@ async function collect(cfg, secrets) {
     lookbackDays: jc.lookbackDays,
     staleDays: jc.staleDays,
     truncated,
+    hidden,
     searchUrl: `${base}/issues/?jql=${encodeURIComponent(jc.jql)}`,
     issues,
   };

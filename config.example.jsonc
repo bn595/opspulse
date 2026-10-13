@@ -79,7 +79,13 @@
       "orgs": ["your-org"],
       "lookbackDays": 30,
       "tools": ["code-scanning", "secret-scanning", "dependabot"],
-      "feed": false
+      "feed": false,
+      // Optional include/exclude rules (also available under github.actions and jira).
+      // Fields: tool, org, repo, by, reason, title, severity, comment, secretType, validity,
+      // package, ruleId, or any API field via "raw.<path>". See README "Filtering with rules".
+      "exclude": [
+        // { "by": "*[bot]" }
+      ]
     }
   },
 
