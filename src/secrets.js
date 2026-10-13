@@ -132,7 +132,7 @@ class SecretStore {
     }
     if (!this.entra) {
       throw new Error(mode === 'auto'
-        ? `${cliErr.message}. To sign in through the browser instead, set secrets.azureKeyVault.tenantId and clientId`
+        ? `${cliErr.message}. Browser sign-in is unavailable because secrets.azureKeyVault.tenantId or clientId is empty`
         : 'secrets.azureKeyVault.auth is "' + mode + '" but tenantId/clientId are not set');
     }
     this.needsLogin = true;

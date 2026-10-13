@@ -23,8 +23,13 @@ const DEFAULTS = {
       vaultUrl: '', // https://<name>.vault.azure.net — required when any "keyvault:" ref is used
       auth: 'auto', // auto | cli | browser | device
       authority: 'https://login.microsoftonline.com',
-      tenantId: '', // browser/device only
-      clientId: '', // browser/device only: a public-client app registration
+      // 'organizations' = any work account, signed in to its home tenant. Set a tenant ID/domain
+      // for guest accounts or to pin the tenant.
+      tenantId: 'organizations',
+      // Defaults to the Azure CLI's public client ID: no app registration needed, Key Vault access
+      // is pre-consented in every tenant. Microsoft's Azure Identity SDK uses the same default.
+      // Replace with your own app registration to have sign-ins show up as your app's name.
+      clientId: '04b07795-8ddb-461a-bbee-02f9e1bf7b46',
       scope: 'https://vault.azure.net/.default',
       cacheMinutes: 60, // re-read secrets from the vault after this long
     },

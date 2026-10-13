@@ -75,28 +75,39 @@ Any `token` / `email` / proxy field can be a `keyvault:<secret-name>` reference.
 
 | `auth` | What happens | Needs |
 |---|---|---|
-| **`cli`** | Runs `az account get-access-token` and reuses the Azure CLI's existing SSO session. Silent. | [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) installed and `az login` done once |
-| **`browser`** | The dashboard shows **Sign in with Microsoft**. Your browser goes through company SSO (MFA, Conditional Access, whatever your tenant enforces) and comes back to `http://localhost:<port>/auth/azure/callback`. Standard OAuth 2.0 authorization code flow with PKCE, no client secret. | `tenantId` + `clientId` (an app registration, below) |
-| **`device`** | Shows a code to type at <https://microsoft.com/devicelogin>. Useful when the browser callback is blocked or in `npm run check`. | `tenantId` + `clientId` |
-| **`auto`** (default) | Tries `cli` first; if that fails and `tenantId`/`clientId` are set, falls back to `browser`. | – |
+| **`browser`** | The dashboard shows **Sign in with Microsoft**. The browser goes to the normal company sign-in page (MFA, Conditional Access, whatever your tenant enforces); if the user is already signed in to Microsoft 365 it's usually a single "pick your account" click. Then it comes back to `http://localhost:<port>/auth/azure/callback`. Standard OAuth 2.0 authorization code flow with PKCE, no client secret. | Nothing |
+| **`device`** | Shows a code to type at <https://microsoft.com/devicelogin>. Useful when the browser callback is blocked, and what `npm run check` uses in a terminal. | Nothing |
+| **`cli`** | Runs `az account get-access-token` and reuses the Azure CLI's existing session. Silent. | [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) installed and `az login` done once |
+| **`auto`** (default) | Tries `cli` first; if `az` isn't installed or logged in, falls back to `browser`. | Nothing |
 
-Whichever way you sign in, the result is an access token for `https://vault.azure.net`, which is used to call the vault's REST API directly. There is no Azure SDK involved.
+Whichever way you sign in, the result is an access token for `https://vault.azure.net` that only works for Key Vault, used to call the vault's REST API directly. There is no Azure SDK involved. Tokens and secrets stay in memory; closing the console window forgets them.
 
-### App registration (once per tenant, for `browser` / `device`)
+### No app registration needed (by default)
 
-Somebody with rights to create app registrations does this once; every user of the dashboard shares the `clientId`.
+Every Microsoft sign-in has to name an app (`clientId`). By default opspulse uses the **Azure CLI's public client ID** (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`), the same default Microsoft's own Azure Identity SDK uses for browser and device-code sign-in. It's pre-consented for Key Vault in every tenant, so there's no consent screen and nothing to set up. `tenantId` defaults to `organizations`, meaning any work account signs in to its home tenant.
+
+**Security is unchanged by this choice.** What decides access is the user's identity plus their role on the vault, not which app ID was used. The trade-offs are visibility and policy:
+
+- Sign-in logs show the app as **"Microsoft Azure CLI"**.
+- If your tenant blocks the Azure CLI for non-admin users with Conditional Access, sign-in fails with an `AADSTS53003` error. Test once with a normal user account before rolling out.
+
+Set `tenantId` explicitly if users are guests in the vault's tenant (their home tenant would be the wrong one).
+
+### Optional: your own app registration
+
+If security wants sign-ins labelled as "opspulse", or the Azure CLI is blocked, register an app once and put its IDs in config:
 
 1. Entra ID → **App registrations** → **New registration**. Name it e.g. `opspulse`. Supported account types: *this organization only*.
 2. **Authentication** → *Add a platform* → **Mobile and desktop applications**. Add the redirect URI `http://localhost` (Entra accepts any port for localhost on this platform). Under *Advanced settings*, set **Allow public client flows** to **Yes** (required for the device code flow).
-3. **API permissions** → *Add a permission* → **Azure Key Vault** → Delegated → `user_impersonation`. Grant admin consent if your tenant requires it for delegated permissions.
-4. Copy the **Application (client) ID** and **Directory (tenant) ID** into `config.json`.
-
-No client secret, no certificate: it's a public client, exactly like the Azure CLI itself.
+3. **API permissions** → *Add a permission* → **Azure Key Vault** → Delegated → `user_impersonation`. Grant admin consent so users don't see a consent screen.
+4. Set `secrets.azureKeyVault.clientId` and `tenantId` in `config.json`.
 
 ### Vault side
 
 - Create the secrets (`github-token`, `sonar-token`, `jira-token`) in the vault.
-- Give each dashboard user the **Key Vault Secrets User** role on the vault (or on the individual secrets). Nobody else can read them, and the dashboard reports a clear `403 … needs the "Key Vault Secrets User" role` when they can't.
+- The vault must use the **Azure RBAC** permission model.
+- Each user (or a group they're in) needs a **data-plane** role on the vault: **Key Vault Secrets User** (read-only, the minimum), **Key Vault Secrets Officer** or **Key Vault Administrator**. **Owner and Contributor are not enough**: they manage the vault but can't read secret values. Without a data-plane role the dashboard reports `403 … needs the "Key Vault Secrets User" role`.
+- If the vault's public network access is disabled or firewalled, users must be on the corporate network or VPN to reach it.
 - Rotate a token by updating the secret. Running dashboards pick it up on the next refresh after `cacheMinutes` (default 60), or immediately after **sign out** → sign in.
 
 ### Where secrets are kept while the tool runs
@@ -181,7 +192,8 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 |---|---|---|
 | `vaultUrl` | `""` | `https://<name>.vault.azure.net`. Required when any `keyvault:` ref is used. |
 | `auth` | `auto` | `auto` / `cli` / `browser` / `device` |
-| `tenantId`, `clientId` | `""` | For `browser` / `device` (and `auto`'s fallback) |
+| `tenantId` | `organizations` | Tenant to sign in to. Set it for guest users or to pin the tenant. |
+| `clientId` | Azure CLI's public client ID | Replace with your own app registration if wanted (see above) |
 | `authority` | `https://login.microsoftonline.com` | Change for sovereign clouds |
 | `scope` | `https://vault.azure.net/.default` | Change for sovereign clouds (e.g. `https://vault.usgovcloudapi.net/.default`) |
 | `cacheMinutes` | `60` | How long fetched secret values are kept before re-reading the vault |
@@ -284,7 +296,7 @@ The API calls follow GitHub's, Atlassian's, Sonar's and Microsoft's public docs.
 - **Sonar "failing quality gate"** uses `api/components/search_projects` with `filter=alert_status = ERROR`. If that's refused, the tile shows `n/a` with the error on hover. Nothing else is affected.
 - **Jira Cloud** uses the enhanced search endpoint (`/rest/api/3/search/jql`). It doesn't return a total, so counts are of fetched issues (capped by `maxIssues`, flagged in the UI if hit).
 - **GHAS** pages are sorted by `updated` and stop at the window edge. Very large orgs may need a higher `maxPagesPerTool`.
-- **Entra browser sign-in** has been tested up to the redirect to `login.microsoftonline.com` and the callback validation; the final token exchange and Key Vault read were tested against local fakes, not a real tenant. If your tenant blocks public clients or requires admin consent, the error page after sign-in will carry the `AADSTS…` code to look up.
+- **Entra browser sign-in** has been tested up to the redirect to `login.microsoftonline.com` and the callback validation; the final token exchange and Key Vault read were tested against local fakes, not a real tenant. If something in your tenant blocks it, the error page after sign-in carries the `AADSTS…` code to look up.
 
 ## Optional: one-file executable
 

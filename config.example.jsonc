@@ -39,11 +39,13 @@
       "vaultUrl": "https://your-vault.vault.azure.net",
       // auto    try the Azure CLI's session (az login) first, else browser sign-in
       // cli     Azure CLI only (silent; needs `az` installed and logged in)
-      // browser company SSO in your browser (needs tenantId + clientId)
-      // device  type a code at microsoft.com/devicelogin (needs tenantId + clientId)
+      // browser company SSO in your browser
+      // device  type a code at microsoft.com/devicelogin
       "auth": "auto",
-      "tenantId": "",   // your Entra tenant ID (GUID or verified domain)
-      "clientId": "",   // a public-client app registration, see README "Azure sign-in"
+      // Both optional. Defaults: tenantId "organizations" (any work account, home tenant) and the
+      // Azure CLI's public client ID, so no app registration is needed. See README.
+      // "tenantId": "your-tenant-id-or-domain",
+      // "clientId": "your-own-app-registration-id",
       "cacheMinutes": 60
     }
   },
