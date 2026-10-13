@@ -173,28 +173,15 @@ const FACETS = {};
 const SEARCH = {};
 const facetDefs = (panel) => FACETS[panel] || {};
 
-function applyFilters(panel, items, except) {
-  const f = ui.f[panel] || {};
-  const defs = facetDefs(panel);
-  let out = items.filter((i) => Object.entries(f).every(([k, v]) => k === except || !defs[k] || String(defs[k].get(i)) === v));
-  const q = (ui.q[panel] || '').trim().toLowerCase();
-  if (q && SEARCH[panel]) out = out.filter((i) => SEARCH[panel](i).toLowerCase().includes(q));
-  return out;
-}
+const panelCtx = (panel) => ({ facets: facetDefs(panel), filters: ui.f[panel] || {}, query: ui.q[panel] || '', search: SEARCH[panel] });
+const applyFilters = (panel, items, except) => OpsView.filterItems(items, panelCtx(panel), except);
 
 // Breakdown for one facet, computed with every other filter applied.
-function facetBars(panel, facet, items, { limit = 8, cls, sort, empty } = {}) {
+function facetBars(panel, facet, items, { limit, cls, sort, empty } = {}) {
   const def = facetDefs(panel)[facet];
-  const active = ui.f[panel]?.[facet];
-  let rows = countBy(applyFilters(panel, items, facet), def.get).map(([k, v]) => ({ key: String(k), label: def.fmt ? def.fmt(k) : String(k), v, cls: cls ? cls(k) : undefined }));
-  if (sort) rows.sort(sort);
-  const more = rows.length - limit;
-  if (more > 0) {
-    const top = rows.slice(0, limit);
-    const a = active != null && !top.some((r) => r.key === active) && rows.find((r) => r.key === active);
-    rows = a ? [...top, a] : top;
-  }
-  return hbars(rows, { panel, facet, active, empty }) + (more > 0 ? `<div class="muted small more-note">+${fmt.format(more)} more · search to narrow</div>` : '');
+  const { rows, more } = OpsView.breakdown(items, panelCtx(panel), facet, { limit, sort });
+  const bars = rows.map((r) => ({ key: r.key, label: def.fmt ? def.fmt(r.key) : r.key, v: r.count, cls: cls ? cls(r.key) : undefined }));
+  return hbars(bars, { panel, facet, active: ui.f[panel]?.[facet], empty }) + (more ? `<div class="muted small more-note">+${fmt.format(more)} more · search to narrow</div>` : '');
 }
 
 function filterBar(panel, n, noun, extra = '') {
@@ -220,50 +207,25 @@ function setFacet(panel, facet, value, toggle) {
   rerender(panel);
 }
 
-// URL hash: win, ghas.win, <panel>.<facet>, <panel>.q, at=<panel>
 function writeHash() {
-  const p = new URLSearchParams();
-  p.set('win', ui.win);
-  p.set('ghas.win', ui.ghasWin);
-  for (const [panel, f] of Object.entries(ui.f)) for (const [k, v] of Object.entries(f)) p.set(`${panel}.${k}`, v);
-  for (const [panel, q] of Object.entries(ui.q)) if (q) p.set(`${panel}.q`, q);
-  if (ui.focus) p.set('at', ui.focus);
-  history.replaceState(null, '', '#' + p.toString());
+  history.replaceState(null, '', '#' + OpsView.encodeState({ win: ui.win, ghasWin: ui.ghasWin, filters: ui.f, queries: ui.q, focus: ui.focus }));
 }
 function readHash() {
-  const p = new URLSearchParams(location.hash.slice(1));
-  ui.f = {};
-  ui.q = {};
-  for (const [k, v] of p) {
-    if (k === 'win') ui.win = Number(v) || ui.win;
-    else if (k === 'ghas.win') ui.ghasWin = Number(v) || ui.ghasWin;
-    else if (k === 'at') ui.focus = v;
-    else {
-      const i = k.indexOf('.');
-      if (i < 1) continue;
-      const panel = k.slice(0, i), facet = k.slice(i + 1);
-      if (facet === 'q') ui.q[panel] = v;
-      else (ui.f[panel] ||= {})[facet] = v;
-    }
-  }
+  const st = OpsView.decodeState(location.hash);
+  ui.f = st.filters;
+  ui.q = st.queries;
+  if (st.win) ui.win = st.win;
+  if (st.ghasWin) ui.ghasWin = st.ghasWin;
+  if (st.focus) ui.focus = st.focus;
 }
 
 const RENDER = {};
 const EXPORT = {}; // panel -> () => { name, columns: [[header, fn(row)]], rows }
 
-// Text cells starting with = + - @ are prefixed so spreadsheet apps treat them as text, not formulas.
-function csvCell(v) {
-  let s = v == null ? '' : String(v);
-  if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
-  return /[",\r\n]/.test(s) || s !== s.trim() ? `"${s.replace(/"/g, '""')}"` : s;
-}
-function buildCsv(columns, rows) {
-  return [columns.map((c) => csvCell(c[0])).join(','), ...rows.map((r) => columns.map((c) => csvCell(c[1](r))).join(','))].join('\r\n');
-}
 function downloadCsv(panel) {
   const x = EXPORT[panel]?.();
   if (!x) return;
-  const blob = new Blob(['\ufeff' + buildCsv(x.columns, x.rows)], { type: 'text/csv;charset=utf-8' });
+  const blob = new Blob(['\ufeff' + OpsView.toCsv(x.columns, x.rows)], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `opspulse-${x.name}-${new Date().toISOString().slice(0, 10)}.csv`;
@@ -588,7 +550,7 @@ function renderJira() {
   const statusBars = facetBars('jira', 'status', d.issues, {
     limit: 12,
     cls: (s) => CAT[catOf.get(s)]?.[0] || 'bg-neutral',
-    sort: (a, b) => (order[catOf.get(a.key)] ?? 3) - (order[catOf.get(b.key)] ?? 3) || b.v - a.v,
+    sort: (a, b) => (order[catOf.get(a.key)] ?? 3) - (order[catOf.get(b.key)] ?? 3) || b.count - a.count,
   });
 
   const { key: sk, dir } = ui.jiraSort;
