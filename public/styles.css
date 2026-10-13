@@ -179,6 +179,9 @@ tbody tr:hover td { background: var(--card-2); }
 .mini.clickable { cursor: pointer; border: 1px solid transparent; }
 .mini.clickable:hover { border-color: var(--border); }
 .mini.active { border-color: var(--accent); background: var(--info-bg); }
+.mini.lvl-critical .m-val { color: var(--critical-ink); }
+.mini.lvl-warn .m-val { color: var(--warn-ink); }
+.mini.lvl-good .m-val { color: var(--good-ink); }
 .toolbar .tb-right, .sub-h .tb-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .btn.sm { height: 26px; padding: 0 10px; font-size: 12px; }
 .hb-label { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

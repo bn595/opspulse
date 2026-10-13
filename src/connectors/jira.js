@@ -27,6 +27,13 @@ function compact(base, i) {
   };
 }
 
+// Cloud: email + API token (Basic). Data Center: personal access token (Bearer).
+function authHeaders(jc, secrets) {
+  return jc.deployment !== 'datacenter'
+    ? { Authorization: 'Basic ' + Buffer.from(`${secrets.jiraEmail}:${secrets.jira}`).toString('base64') }
+    : { Authorization: `Bearer ${secrets.jira}` };
+}
+
 async function collect(cfg, secrets) {
   const jc = cfg.jira;
   if (!jc.baseUrl) throw new Error('jira.baseUrl is not set');
@@ -36,9 +43,7 @@ async function collect(cfg, secrets) {
   const cloud = jc.deployment !== 'datacenter';
   if (cloud && !secrets.jiraEmail) throw new Error('Jira Cloud needs jira.email alongside the API token');
 
-  const headers = cloud
-    ? { Authorization: 'Basic ' + Buffer.from(`${secrets.jiraEmail}:${secrets.jira}`).toString('base64') }
-    : { Authorization: `Bearer ${secrets.jira}` };
+  const headers = authHeaders(jc, secrets);
 
   // Invalid credentials are treated as anonymous and return no issues, so verify auth first.
   try {
@@ -91,4 +96,4 @@ async function collect(cfg, secrets) {
   };
 }
 
-module.exports = { collect };
+module.exports = { collect, authHeaders };

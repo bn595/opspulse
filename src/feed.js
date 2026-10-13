@@ -126,12 +126,15 @@ function build(sources, cfg, now = Date.now(), extra = []) {
   const items = [...extra];
   for (const [key, src] of Object.entries(sources)) {
     if (src.status === 'disabled') continue;
+    const plugin = key.startsWith('plugin:');
+    const label = plugin ? src.title || key.slice(7) : LABEL[key];
+    const source = plugin ? key.slice(7) : key === 'dismissals' ? 'ghas' : key;
     // A pending Key Vault sign-in is reported once by the secrets item.
     if (src.error && !/waiting for key vault sign-in/i.test(src.error)) {
-      items.push({ id: `src-${key}`, level: 'critical', source: key === 'dismissals' ? 'ghas' : key, title: `${LABEL[key]} refresh failed`, detail: src.error });
+      items.push({ id: `src-${key}`, level: 'critical', source, title: `${label} refresh failed`, detail: src.error });
     }
     if (src.data) {
-      try { items.push(...BUILDERS[key](src, cfg, now)); } catch (e) { items.push({ id: `feed-${key}`, level: 'warn', source: key, title: `Couldn't evaluate ${LABEL[key]} rules`, detail: e.message }); }
+      try { items.push(...(plugin ? src.data.feed || [] : BUILDERS[key](src, cfg, now))); } catch (e) { items.push({ id: `feed-${key}`, level: 'warn', source, title: `Couldn't evaluate ${label} rules`, detail: e.message }); }
     }
   }
   return items.sort((a, b) => RANK[a.level] - RANK[b.level] || (b.count || 0) - (a.count || 0));

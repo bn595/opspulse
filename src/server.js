@@ -14,6 +14,7 @@ const feed = require('./feed');
 const demo = require('./demo');
 const { SecretStore } = require('./secrets');
 const { createAcks } = require('./acks');
+const { loadPlugins, runPlugin, createContext } = require('./plugins');
 const CONNECTORS = {
   actions: require('./connectors/actions'),
   dismissals: require('./connectors/dismissals'),
@@ -24,6 +25,7 @@ const CONNECTORS = {
 const ROOT = path.resolve(__dirname, '..');
 const PUBLIC = path.join(ROOT, 'public');
 const VERSION = require(path.join(ROOT, 'package.json')).version;
+const EXAMPLE_PLUGIN = path.join(ROOT, 'plugins', 'examples', 'runs-by-actor.js');
 
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
@@ -46,6 +48,9 @@ process.on('unhandledRejection', (e) => console.error('  unhandled:', e?.stack |
 
 let cfg, configMtime = 0;
 let store;
+let plugins = [];
+const sources = {};
+for (const k of Object.keys(CONNECTORS)) sources[k] = { status: 'pending', fetchedAt: null, error: null, data: null };
 function applyNetwork(proxies) { net.configure({ ...cfg.network, proxies }); }
 
 function loadConfig() {
@@ -58,6 +63,11 @@ function loadConfig() {
   if (store) store.reconfigure(cfg);
   else store = new SecretStore(cfg, { applyNetwork, onSignedIn: () => { console.log(`  signed in to Azure as ${store.azure.user || 'unknown user'}`); refresh(); } });
   applyNetwork({});
+  plugins = loadPlugins(DEMO ? [{ path: EXAMPLE_PLUGIN, failureWarn: 5 }] : cfg.plugins, cfg._dir);
+  for (const p of plugins) if (p.error) console.warn(`  [plugin ${p.id}] ${p.error}`);
+  const keep = new Set(plugins.map((p) => `plugin:${p.id}`));
+  for (const k of Object.keys(sources)) if (k.startsWith('plugin:') && !keep.has(k)) delete sources[k];
+  for (const p of plugins) sources[`plugin:${p.id}`] = { status: 'pending', fetchedAt: null, error: null, data: null, ...sources[`plugin:${p.id}`], title: p.title };
 }
 loadConfig();
 
@@ -70,8 +80,6 @@ const ENABLED = () => ({
 
 const CACHE_FILE = path.join(cfg._dir, '.cache', DEMO ? 'demo.json' : 'snapshot.json');
 const acks = createAcks({ file: path.join(cfg._dir, '.cache', DEMO ? 'demo-acks.json' : 'acks.json') });
-const sources = {};
-for (const k of Object.keys(CONNECTORS)) sources[k] = { status: 'pending', fetchedAt: null, error: null, data: null };
 let refreshing = null;
 let lastRefreshAt = null;
 let nextRefreshAt = null;
@@ -130,6 +138,9 @@ async function refresh() {
         }
       })
     );
+    // Plugins run after the built-in connectors so ctx.sources holds this refresh's data.
+    const builtins = Object.fromEntries(Object.keys(CONNECTORS).map((k) => [k, sources[k].data || null]));
+    await Promise.all(plugins.map((p) => refreshPlugin(p, secrets, builtins)));
     lastRefreshAt = new Date().toISOString();
     saveCache();
   })().finally(() => {
@@ -137,6 +148,20 @@ async function refresh() {
     nextRefreshAt = new Date(Date.now() + cfg.server.refreshMinutes * 60e3).toISOString();
   });
   return refreshing;
+}
+
+async function refreshPlugin(p, secrets, builtins) {
+  const key = `plugin:${p.id}`;
+  if (p.error) { sources[key] = { status: 'error', title: p.title, fetchedAt: null, error: p.error, data: null }; return; }
+  sources[key] = { ...sources[key], status: 'refreshing' };
+  const t0 = Date.now();
+  try {
+    const data = await runPlugin(p, createContext({ cfg, secrets, store, options: p.options, sources: builtins }));
+    sources[key] = { status: 'ok', title: p.title, fetchedAt: new Date().toISOString(), durationMs: Date.now() - t0, error: null, data };
+  } catch (e) {
+    sources[key] = { ...sources[key], status: 'error', error: e.message, errorAt: new Date().toISOString() };
+    console.warn(`  [${key}] ${e.message}`);
+  }
 }
 
 function snapshot() {

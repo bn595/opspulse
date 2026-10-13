@@ -78,3 +78,14 @@ test('waiting for Key Vault sign-in is not reported per source', () => {
 test('disabled sources are ignored', () => {
   assert.deepEqual(feed.build({ sonar: { status: 'disabled', error: 'x' } }, cfg, NOW), []);
 });
+
+test('plugin feed items and plugin failures appear under the plugin title', () => {
+  const sources = {
+    'plugin:access-report': { status: 'ok', title: 'Access report', data: { feed: [{ id: 'plugin-access-report-0', level: 'warn', source: 'access-report', title: '3 requests waiting' }] } },
+    'plugin:broken': { status: 'error', title: 'Broken report', error: 'broken: boom' },
+  };
+  assert.deepEqual(feed.build(sources, cfg, NOW).map((i) => [i.level, i.source, i.title]), [
+    ['critical', 'broken', 'Broken report refresh failed'],
+    ['warn', 'access-report', '3 requests waiting'],
+  ]);
+});

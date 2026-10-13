@@ -61,6 +61,7 @@ const DEFAULTS = {
     staleDays: 30,
     tokenExpiryWarnDays: 14,
   },
+  plugins: [],
   jira: {
     enabled: true,
     deployment: 'cloud', // cloud | datacenter

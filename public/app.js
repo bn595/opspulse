@@ -349,7 +349,7 @@ function feedRow(i) {
   return `<div class="feed-item ${i.level}${i.muted ? ' is-muted' : ''}">
       <span class="lvl ${i.level}">${ICON[i.level]}${LEVEL_LABEL[i.level]}</span>
       <div><div class="fi-title">${esc(i.title)}</div>${i.detail ? `<div class="fi-detail">${esc(i.detail)}</div>` : ''}</div>
-      <span class="src-tag">${esc(SRC_LABEL[i.source] || i.source)}</span>
+      <span class="src-tag">${esc(SRC_LABEL[i.source] || snap.sources[`plugin:${i.source}`]?.title || i.source)}</span>
       <span class="fi-actions">${i.url ? `<a class="small" href="${href(i.url)}" target="_blank" rel="noopener">Open ↗</a>` : ''}${muted}</span>
     </div>`;
 }
@@ -435,6 +435,10 @@ function renderKpis() {
   if (s) {
     const sum = (k) => s.orgs.reduce((t, o) => t + (o[k]?.v || 0), 0);
     tiles.push(kpi('Sonar projects', fmt.format(sum('projects')), `${fmt.format(sum('stale'))} not analyzed in ${s.staleDays}d`));
+  }
+  for (const [k, src] of Object.entries(snap.sources)) {
+    if (!k.startsWith('plugin:') || !src.data) continue;
+    for (const m of src.data.metrics.filter((x) => x.kpi)) tiles.push(kpi(m.label, typeof m.value === 'number' ? fmt.format(m.value) : esc(m.value), esc(m.hint || src.title || '')));
   }
   $('#kpis').innerHTML = tiles.join('');
   $('#kpis').hidden = !tiles.length;
@@ -766,6 +770,100 @@ function renderSonar() {
     <tbody>${toks || '<tr><td colspan="4" class="empty">None</td></tr>'}</tbody></table></div>` : ''}`;
 }
 
+/* ---------- plugins ---------- */
+const pluginSort = {};
+
+function pluginCell(col, row) {
+  const v = row[col.key];
+  if (v == null || v === '') return '<span class="muted">—</span>';
+  if (col.type === 'number') return typeof v === 'number' ? fmt.format(v) : esc(v);
+  if (col.type === 'date') return `<span data-tip="${esc(esc(dateStr(v)))}">${rel(v)}</span>`;
+  if (col.type === 'link' && col.href && row[col.href]) return `<a href="${href(row[col.href])}" target="_blank" rel="noopener">${esc(v)}</a>`;
+  return esc(v);
+}
+
+function sortRows(rows, col, dir) {
+  const val = (r) => (col.type === 'date' ? Date.parse(r[col.key]) || 0 : col.type === 'number' ? Number(r[col.key]) || 0 : String(r[col.key] ?? ''));
+  return [...rows].sort((a, b) => {
+    const x = val(a), y = val(b);
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir;
+  });
+}
+
+function pluginSection(id) {
+  let sec = document.querySelector(`section[data-panel-id="${CSS.escape(id)}"]`);
+  if (!sec) {
+    sec = document.createElement('section');
+    sec.className = 'card plugin';
+    sec.dataset.panelId = id;
+    sec.innerHTML = '<div class="section-head"><h2></h2><span class="tag">Plugin</span></div><div class="plugin-body"></div>';
+    $('main').insertBefore(sec, $('#footer'));
+  }
+  return sec;
+}
+
+function renderPlugin(id) {
+  const src = snap.sources[`plugin:${id}`];
+  if (!src) return;
+  const sec = pluginSection(id);
+  sec.querySelector('h2').textContent = src.title || id;
+  const body = sec.querySelector('.plugin-body');
+  if (!src.data) {
+    body.innerHTML = src.error ? `<div class="alert err"><b>Couldn't load.</b> ${esc(src.error)}</div>` : '<div class="skeleton"></div>';
+    return;
+  }
+  const d = src.data;
+  let html = src.error ? `<div class="alert warn">Showing data from ${rel(src.fetchedAt)} — last refresh failed: ${esc(src.error)}</div>` : '';
+  if (d.metrics.length) {
+    html += `<div class="minis">${d.metrics.map((m) => `<div class="mini${m.level ? ` lvl-${esc(m.level)}` : ''}"${m.hint ? ` data-tip="${esc(esc(m.hint))}"` : ''}>
+      <div class="m-label">${esc(m.label)}</div><div class="m-val">${typeof m.value === 'number' ? fmt.format(m.value) : esc(m.value)}</div></div>`).join('')}</div>`;
+  }
+  let rows = [];
+  if (d.table) {
+    const cols = d.table.columns;
+    FACETS[id] = Object.fromEntries(cols.filter((c) => c.facet).map((c) => [c.key, { label: c.label, get: (r) => r[c.key] ?? '—' }]));
+    SEARCH[id] = (r) => cols.map((c) => r[c.key] ?? '').join(' ');
+    const s = pluginSort[id];
+    const sortCol = s && cols.find((c) => c.key === s.key);
+    rows = applyFilters(id, d.table.rows);
+    if (sortCol) rows = sortRows(rows, sortCol, s.dir);
+    EXPORT[id] = () => ({ name: id, rows, columns: cols.map((c) => [c.label, (r) => r[c.key]]) });
+
+    if (d.chart) html += `<h3>${esc(d.chart.title || 'Per day')}</h3><div class="chart plugin-chart"></div>`;
+    const facetCols = cols.filter((c) => c.facet);
+    if (facetCols.length) html += `<div class="grid-4 breakdowns">${facetCols.map((c) => `<div><h3>${esc(c.label)}</h3>${facetBars(id, c.key, d.table.rows)}</div>`).join('')}</div>`;
+
+    const LIMIT = 25;
+    const shown = ui.all[id] ? rows : rows.slice(0, LIMIT);
+    const arrow = (k) => (s?.key === k ? (s.dir > 0 ? ' ↑' : ' ↓') : '');
+    html += `${filterBar(id, rows.length, 'row')}${d.table.truncated ? '<div class="muted small rules-note">Showing the first 5,000 rows returned by the plugin.</div>' : ''}
+      <div class="tbl-wrap"><table>
+        <thead><tr>${cols.map((c) => `<th class="sortable${c.type === 'number' ? ' r' : ''}" data-plugin-sort="${esc(c.key)}">${esc(c.label)}${arrow(c.key)}</th>`).join('')}</tr></thead>
+        <tbody>${shown.map((r) => `<tr>${cols.map((c) => `<td${c.type === 'number' ? ' class="r num"' : ''}>${pluginCell(c, r)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${cols.length}" class="empty">No rows match</td></tr>`}</tbody>
+      </table></div>
+      ${rows.length > LIMIT ? `<button class="link-btn" type="button" data-more="${esc(id)}">${ui.all[id] ? 'Show fewer' : `Show all ${fmt.format(rows.length)}`}</button>` : ''}`;
+  }
+  body.innerHTML = html || '<div class="empty">This plugin returned no metrics or table.</div>';
+
+  if (d.chart) {
+    const from = new Date(now - (d.chart.days - 1) * D); from.setHours(0, 0, 0, 0);
+    const b = bucketize(rows, (r) => r[d.chart.key], from.getTime(), from.getTime() + d.chart.days * D, D, (xs) => [{ v: xs.length, cls: 'f-s1', name: 'Rows' }]).map((x) => ({ ...x, label: dayStr(x.t0) }));
+    columns(body.querySelector('.plugin-chart'), b, { height: 150 });
+  }
+  body.querySelectorAll('[data-plugin-sort]').forEach((th) => (th.onclick = () => {
+    const k = th.dataset.pluginSort;
+    pluginSort[id] = { key: k, dir: pluginSort[id]?.key === k ? -pluginSort[id].dir : -1 };
+    renderPlugin(id);
+  }));
+  RENDER[id] = () => renderPlugin(id);
+}
+
+function renderPlugins() {
+  const ids = Object.keys(snap.sources).filter((k) => k.startsWith('plugin:')).map((k) => k.slice(7));
+  document.querySelectorAll('section.plugin').forEach((s) => { if (!ids.includes(s.dataset.panelId)) s.remove(); });
+  ids.forEach(renderPlugin);
+}
+
 /* ---------- loop ---------- */
 let scrolledToFocus = false;
 function renderAll() {
@@ -778,6 +876,7 @@ function renderAll() {
   renderJira();
   renderGhas();
   renderSonar();
+  renderPlugins();
   if (!scrolledToFocus && ui.focus && snap.lastRefreshAt) {
     scrolledToFocus = true;
     const sec = document.querySelector(`[data-panel-id="${CSS.escape(ui.focus)}"]`);

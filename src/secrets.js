@@ -26,13 +26,30 @@ class SecretStore {
     this.refs = secretRefs(cfg);
     this.kv = cfg.secrets.azureKeyVault;
     this.dir = cfg._dir;
-    this.cache = { values: {}, at: 0 };
+    this.clearCache();
     this.status = {};
     this.proxies = {};
     this.entra = this.kv.tenantId && this.kv.clientId ? new EntraClient(this.kv) : null;
   }
 
   usesVault() { return Object.values(this.refs).some((r) => KV.test(r || '')); }
+
+  clearCache() {
+    this.cache = { values: {}, at: 0 };
+    this.refCache = new Map();
+  }
+
+  // Resolves any reference on demand (used by plugins). Key Vault values are cached like resolve()'s.
+  async resolveRef(ref) {
+    if (!KV.test(ref || '')) return this.resolveLocal(ref);
+    if (!this.kv.vaultUrl) throw new Error('secrets.azureKeyVault.vaultUrl is not set but a "keyvault:" reference is used');
+    const name = ref.slice(9).trim();
+    const hit = this.refCache.get(name);
+    if (hit && Date.now() - hit.at < this.kv.cacheMinutes * 60e3) return hit.value;
+    const value = await getSecret(this.kv.vaultUrl, name, await this.vaultToken());
+    this.refCache.set(name, { value, at: Date.now() });
+    return value;
+  }
 
   resolveLocal(ref) {
     if (!ref || typeof ref !== 'string') return '';
@@ -136,7 +153,7 @@ class SecretStore {
     this.azure = { accessToken: t.accessToken, expiresAt: t.expiresAt, refreshToken: t.refreshToken || null, user: t.user || this.azure.user, method };
     this.needsLogin = false;
     this.lastError = null;
-    this.cache = { values: {}, at: 0 };
+    this.clearCache();
   }
 
   beginBrowserLogin(redirectUri) {
@@ -178,7 +195,7 @@ class SecretStore {
   signOut() {
     this.azure = { accessToken: null, expiresAt: 0, refreshToken: null, user: null, method: null };
     this.device = null;
-    this.cache = { values: {}, at: 0 };
+    this.clearCache();
     this.needsLogin = this.usesVault() && !['cli'].includes(this.kv.auth);
     this.lastError = null;
   }
