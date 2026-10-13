@@ -205,7 +205,7 @@ function filterBar(panel, n, noun, extra = '') {
     <input class="input" type="search" data-search="${esc(panel)}" placeholder="Search…" value="${esc(ui.q[panel] || '')}" aria-label="Search">
     ${pills}${any ? `<button class="link-btn" type="button" data-clearall="${esc(panel)}">Clear all</button>` : ''}
     <span class="muted small">${plural(n, noun)}</span>
-    <span class="tb-right">${extra}<button class="btn sm" type="button" data-copylink="${esc(panel)}">Copy link</button></span>
+    <span class="tb-right">${extra}${EXPORT[panel] ? exportBtn(panel) : ''}<button class="btn sm" type="button" data-copylink="${esc(panel)}">Copy link</button></span>
   </div>`;
 }
 
@@ -249,6 +249,30 @@ function readHash() {
 }
 
 const RENDER = {};
+const EXPORT = {}; // panel -> () => { name, columns: [[header, fn(row)]], rows }
+
+// Text cells starting with = + - @ are prefixed so spreadsheet apps treat them as text, not formulas.
+function csvCell(v) {
+  let s = v == null ? '' : String(v);
+  if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return /[",\r\n]/.test(s) || s !== s.trim() ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function buildCsv(columns, rows) {
+  return [columns.map((c) => csvCell(c[0])).join(','), ...rows.map((r) => columns.map((c) => csvCell(c[1](r))).join(','))].join('\r\n');
+}
+function downloadCsv(panel) {
+  const x = EXPORT[panel]?.();
+  if (!x) return;
+  const blob = new Blob(['\ufeff' + buildCsv(x.columns, x.rows)], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `opspulse-${x.name}-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const exportBtn = (panel) => `<button class="btn sm" type="button" data-export="${esc(panel)}">Export CSV</button>`;
 // Re-render one panel, keeping focus and caret in its search box.
 function rerender(panel) {
   const a = document.activeElement;
@@ -263,8 +287,9 @@ function rerender(panel) {
 }
 
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-facet],[data-unfacet],[data-clearall],[data-copylink],[data-more]');
+  const t = e.target.closest('[data-facet],[data-unfacet],[data-clearall],[data-copylink],[data-more],[data-export]');
   if (!t) return;
+  if (t.dataset.export) { downloadCsv(t.dataset.export); return; }
   const panel = t.dataset.panel || t.dataset.clearall || t.dataset.copylink || t.dataset.more;
   if (t.dataset.facet) setFacet(panel, t.dataset.facet, t.dataset.key, t.dataset.set !== '1');
   else if (t.dataset.unfacet) setFacet(panel, t.dataset.unfacet, null);
@@ -474,6 +499,7 @@ function renderActions() {
   const stepH = ui.win <= 24 ? 1 : ui.win <= 72 ? 3 : 6;
   const st = actionsStats(ui.win);
 
+  const summary = [];
   let rows = '';
   for (const repo of d.repos) {
     rows += `<tr class="repo-head"><td colspan="7"><a href="${href(repo.url)}" target="_blank" rel="noopener">${esc(repo.label)}</a>${repo.label !== repo.repo ? ` <span class="muted small mono">${esc(repo.repo)}</span>` : ''}${repo.truncated ? ' <span class="muted small">(run list truncated)</span>' : ''}</td></tr>`;
@@ -492,6 +518,7 @@ function renderActions() {
       }).join('');
       const last = wf.runs[0] || wf.lastRun;
       const med = median(inWin.map((r) => r.durationSec).filter((x) => x != null));
+      summary.push({ repo: repo.repo, wf, label, runs: inWin.length, fails, rate, last, med });
       rows += `<tr>
         <td><span class="state ${cls}">${STATE_ICON[cls]}${label}</span></td>
         <td><a href="${href(wf.url)}" target="_blank" rel="noopener">${esc(wf.name)}</a>${wf.expectEveryHours ? ` <span class="muted small" data-tip="Expected to run at least every ${wf.expectEveryHours}h">· every ${wf.expectEveryHours}h</span>` : ''}</td>
@@ -508,11 +535,18 @@ function renderActions() {
     <div class="sub-h" style="margin-top:0"><h3>Runs over time · all workflows</h3><span class="muted small">${fmt.format(st.runs)} runs in ${winLabel(ui.win)}</span></div>
     ${legend([['bg-good', 'Succeeded'], ['bg-crit', 'Failed'], ['bg-neutral', 'Cancelled / other']])}
     <div class="chart" id="act-chart"></div>
-    <div class="sub-h"><h3>Workflows</h3><span class="muted small">recent runs: oldest → newest</span></div>
+    <div class="sub-h"><h3>Workflows</h3><span class="tb-right"><span class="muted small hide-sm">recent runs: oldest → newest</span>${exportBtn('actions')}</span></div>
     <div class="tbl-wrap"><table>
       <thead><tr><th>Status</th><th>Workflow</th><th class="hide-sm">Recent runs</th><th class="r">Success · ${winLabel(ui.win)}</th><th class="r">Failed / runs</th><th class="r">Last run</th><th class="r hide-sm">Median time</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
 
+  EXPORT.actions = () => ({
+    name: `workflows-${winLabel(ui.win)}`,
+    rows: summary,
+    columns: [['Repository', (r) => r.repo], ['Workflow', (r) => r.wf.name], ['File', (r) => r.wf.path], ['Status', (r) => r.label],
+      [`Runs (${winLabel(ui.win)})`, (r) => r.runs], ['Failures', (r) => r.fails], ['Success rate %', (r) => r.rate],
+      ['Last run', (r) => r.last?.created], ['Last conclusion', (r) => r.last?.conclusion || r.last?.status], ['Median duration (s)', (r) => r.med], ['URL', (r) => r.wf.url]],
+  });
   const from = Math.floor(since / (stepH * H)) * stepH * H;
   const buckets = bucketize(st.all, (r) => r.created, from, now + 1, stepH * H, (rs) => [
     { v: rs.filter((r) => r.conclusion === 'success').length, cls: 'f-good', name: 'Succeeded' },
@@ -561,6 +595,13 @@ function renderJira() {
   const list = [...items].sort((a, b) => {
     const va = a[sk] ?? '', vb = b[sk] ?? '';
     return (sk === 'created' || sk === 'updated' ? Date.parse(va) - Date.parse(vb) : String(va).localeCompare(String(vb))) * dir;
+  });
+  EXPORT.jira = () => ({
+    name: 'jira',
+    rows: list,
+    columns: [['Key', (i) => i.key], ['Summary', (i) => i.summary], ['Status', (i) => i.status], ['Category', (i) => CAT[i.category]?.[1] || i.category],
+      ['Assignee', (i) => i.assignee], ['Reporter', (i) => i.reporter], ['Priority', (i) => i.priority], ['Type', (i) => i.type],
+      ['Labels', (i) => (i.labels || []).join(' ')], ['Created', (i) => i.created], ['Updated', (i) => i.updated], ['Resolved', (i) => i.resolved], ['URL', (i) => i.url]],
   });
   const LIMIT = 25;
   const shown = ui.all.jira ? list : list.slice(0, LIMIT);
@@ -657,6 +698,13 @@ function renderGhas() {
   }).join('');
   const total = `<div class="mini"><div class="m-label">Dismissed · ${ui.ghasWin}d</div><div class="m-val">${fmt.format(items.length)}</div></div>`;
 
+  EXPORT.ghas = () => ({
+    name: 'ghas-dismissals',
+    rows: items,
+    columns: [['Dismissed at', (i) => i.at], ['Org', (i) => i.org], ['Tool', (i) => TOOL[i.tool]?.[2] || i.tool], ['Alert', (i) => i.title], ['Severity', (i) => i.severity],
+      ['Repository', (i) => i.repo], ['Dismissed by', (i) => i.by], ['Reason', (i) => reasonLabel(i.reason)], ['Comment', (i) => i.comment],
+      ['Secret type', (i) => i.secretType], ['Validity', (i) => i.validity], ['Package', (i) => i.package], ['Rule', (i) => i.ruleId], ['URL', (i) => i.url]],
+  });
   const LIMIT = 15;
   const shown = ui.all.ghas ? items : items.slice(0, LIMIT);
 
@@ -718,7 +766,14 @@ function renderSonar() {
       <td class="r">${t.expirationDate ? `${lvl ? `<span class="lvl ${lvl}">${ICON[lvl]}` : '<span>'}${left < 0 ? 'expired' : rel(t.expirationDate)}</span>` : '<span class="muted">no expiry</span>'}</td></tr>`;
   }).join('');
 
-  $('#sonar-body').innerHTML = `${g.banner}${orgs}
+  const cell = (x) => (x?.err ? `n/a (${x.err})` : x?.v);
+  EXPORT.sonar = () => ({
+    name: 'sonar-orgs',
+    rows: d.orgs,
+    columns: [['Organization', (o) => o.key], ['Projects', (o) => cell(o.projects)], [`Not analyzed in ${d.staleDays}d`, (o) => cell(o.stale)],
+      ['Never analyzed', (o) => cell(o.neverAnalyzed)], ['Failing quality gate', (o) => cell(o.failingGate)], ['URL', (o) => o.url]],
+  });
+  $('#sonar-body').innerHTML = `${g.banner}<div class="sub-h" style="margin-top:0"><h3>Organizations</h3>${d.orgs.length ? exportBtn('sonar') : ''}</div>${orgs}
     ${d.tokens ? `<div class="sub-h"><h3>Tokens on this account</h3></div>
     <div class="tbl-wrap"><table><thead><tr><th>Name</th><th>Last used</th><th>Created</th><th class="r">Expires</th></tr></thead>
     <tbody>${toks || '<tr><td colspan="4" class="empty">None</td></tr>'}</tbody></table></div>` : ''}`;
