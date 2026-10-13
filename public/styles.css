@@ -145,6 +145,7 @@ tbody tr:hover td { background: var(--card-2); }
 /* charts */
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 24px; }
 .chart { width: 100%; }
 .chart svg { display: block; overflow: visible; }
 .chart text { fill: var(--muted); font-size: 11px; font-family: inherit; }
@@ -161,10 +162,20 @@ tbody tr:hover td { background: var(--card-2); }
 .bg-s1 { background: var(--s1); } .bg-s2 { background: var(--s2); } .bg-s3 { background: var(--s3); }
 
 .hbars { display: flex; flex-direction: column; gap: 7px; }
-.hbar { display: grid; grid-template-columns: minmax(90px, 38%) 1fr 44px; gap: 10px; align-items: center; font-size: 12.5px; }
+.hbar { display: grid; grid-template-columns: minmax(90px, 46%) 1fr 44px; gap: 10px; align-items: center; font-size: 12.5px; }
 .hbar.clickable { cursor: pointer; border-radius: 6px; }
 .hbar.clickable:hover .hb-label { color: var(--text); text-decoration: underline; }
 .hbar.active .hb-label { color: var(--text); font-weight: 650; }
+.hbars.has-active .hbar:not(.active) { opacity: .5; }
+.hbars.has-active .hbar:not(.active):hover { opacity: 1; }
+.more-note { margin-top: 6px; }
+.rules-note { margin: -4px 0 12px; }
+.breakdowns { margin-top: 22px; }
+.mini.clickable { cursor: pointer; border: 1px solid transparent; }
+.mini.clickable:hover { border-color: var(--border); }
+.mini.active { border-color: var(--accent); background: var(--info-bg); }
+.toolbar .tb-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.btn.sm { height: 26px; padding: 0 10px; font-size: 12px; }
 .hb-label { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hb-track { height: 12px; }
 .hb-fill { height: 12px; border-radius: 0 4px 4px 0; min-width: 2px; }

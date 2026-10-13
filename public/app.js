@@ -18,12 +18,11 @@ let now = Date.now();
 const ui = {
   win: store.get('win', 24),
   ghasWin: store.get('ghasWin', 30),
-  org: store.get('org', '__all'),
-  jiraStatus: null,
-  jiraQuery: '',
+  f: {},   // panel -> { facet: value }
+  q: {},   // panel -> search text
+  all: {}, // panel -> show all rows
+  focus: null,
   jiraSort: store.get('jiraSort', { key: 'updated', dir: -1 }),
-  jiraAll: false,
-  ghasAll: false,
   feedAll: false,
 };
 
@@ -137,16 +136,20 @@ function niceStep(max) {
 function legend(items) {
   return `<div class="legend">${items.map(([cls, name]) => `<span><i class="sw ${cls}"></i>${esc(name)}</span>`).join('')}</div>`;
 }
-// Horizontal bars. rows: [{ label, v, cls, key?, tip? }]
-function hbars(rows, { max, clickable, active } = {}) {
-  if (!rows.length) return '<div class="empty small">Nothing in this window</div>';
-  const m = max || Math.max(...rows.map((r) => r.v), 1);
-  return `<div class="hbars">${rows
-    .map((r) => `<div class="hbar${clickable ? ' clickable' : ''}${active && active === r.key ? ' active' : ''}" ${clickable ? `data-key="${esc(r.key)}" role="button" tabindex="0"` : ''} data-tip="${esc(`<b>${esc(r.label)}</b><br>${fmt.format(r.v)}${r.tip ? '<br>' + esc(r.tip) : ''}`)}">
+// Horizontal bars. rows: [{ label, v, key?, cls?, tip? }]. With panel + facet, each bar toggles a filter.
+function hbars(rows, { panel, facet, active, empty = 'Nothing in this window' } = {}) {
+  if (!rows.length) return `<div class="empty small">${esc(empty)}</div>`;
+  const m = Math.max(...rows.map((r) => r.v), 1);
+  const click = panel && facet;
+  return `<div class="hbars${active != null ? ' has-active' : ''}">${rows.map((r) => {
+    const key = String(r.key ?? r.label);
+    const on = active === key;
+    const attrs = click ? ` data-panel="${esc(panel)}" data-facet="${esc(facet)}" data-key="${esc(key)}" role="button" tabindex="0" aria-pressed="${on}"` : '';
+    return `<div class="hbar${click ? ' clickable' : ''}${on ? ' active' : ''}"${attrs} data-tip="${esc(`<b>${esc(r.label)}</b><br>${fmt.format(r.v)}${r.tip ? '<br>' + esc(r.tip) : ''}${click ? `<br><i>${on ? 'Click to clear filter' : 'Click to filter'}</i>` : ''}`)}">
         <span class="hb-label">${esc(r.label)}</span>
         <span class="hb-track"><span class="hb-fill ${r.cls || 'bg-s1'}" style="width:${(r.v / m) * 100}%;display:block"></span></span>
-        <span class="hb-val">${fmt.format(r.v)}</span></div>`)
-    .join('')}</div>`;
+        <span class="hb-val">${fmt.format(r.v)}</span></div>`;
+  }).join('')}</div>`;
 }
 function countBy(items, fn) {
   const m = new Map();
@@ -163,6 +166,129 @@ function bucketize(items, getT, fromMs, toMs, stepMs, segFn) {
   }
   return out.map((b) => ({ ...b, segs: segFn(b.items) }));
 }
+
+/* ---------- filters ---------- */
+// Facets per panel: { facet: { label, get(item), fmt?(value) } }. Plugins register theirs at render time.
+const FACETS = {};
+const SEARCH = {};
+const facetDefs = (panel) => FACETS[panel] || {};
+
+function applyFilters(panel, items, except) {
+  const f = ui.f[panel] || {};
+  const defs = facetDefs(panel);
+  let out = items.filter((i) => Object.entries(f).every(([k, v]) => k === except || !defs[k] || String(defs[k].get(i)) === v));
+  const q = (ui.q[panel] || '').trim().toLowerCase();
+  if (q && SEARCH[panel]) out = out.filter((i) => SEARCH[panel](i).toLowerCase().includes(q));
+  return out;
+}
+
+// Breakdown for one facet, computed with every other filter applied.
+function facetBars(panel, facet, items, { limit = 8, cls, sort, empty } = {}) {
+  const def = facetDefs(panel)[facet];
+  const active = ui.f[panel]?.[facet];
+  let rows = countBy(applyFilters(panel, items, facet), def.get).map(([k, v]) => ({ key: String(k), label: def.fmt ? def.fmt(k) : String(k), v, cls: cls ? cls(k) : undefined }));
+  if (sort) rows.sort(sort);
+  const more = rows.length - limit;
+  if (more > 0) {
+    const top = rows.slice(0, limit);
+    const a = active != null && !top.some((r) => r.key === active) && rows.find((r) => r.key === active);
+    rows = a ? [...top, a] : top;
+  }
+  return hbars(rows, { panel, facet, active, empty }) + (more > 0 ? `<div class="muted small more-note">+${fmt.format(more)} more · search to narrow</div>` : '');
+}
+
+function filterBar(panel, n, noun, extra = '') {
+  const defs = facetDefs(panel);
+  const pills = Object.entries(ui.f[panel] || {}).map(([k, v]) => `<span class="filter-pill">${esc(defs[k]?.label || k)}: ${esc(defs[k]?.fmt ? defs[k].fmt(v) : v)}<button type="button" data-panel="${esc(panel)}" data-unfacet="${esc(k)}" aria-label="Remove ${esc(defs[k]?.label || k)} filter">×</button></span>`).join('');
+  const any = pills || ui.q[panel];
+  return `<div class="toolbar">
+    <input class="input" type="search" data-search="${esc(panel)}" placeholder="Search…" value="${esc(ui.q[panel] || '')}" aria-label="Search">
+    ${pills}${any ? `<button class="link-btn" type="button" data-clearall="${esc(panel)}">Clear all</button>` : ''}
+    <span class="muted small">${plural(n, noun)}</span>
+    <span class="tb-right">${extra}<button class="btn sm" type="button" data-copylink="${esc(panel)}">Copy link</button></span>
+  </div>`;
+}
+
+function setFacet(panel, facet, value, toggle) {
+  const f = (ui.f[panel] ||= {});
+  if (value == null || (toggle && f[facet] === value)) delete f[facet];
+  else f[facet] = value;
+  if (!Object.keys(f).length) delete ui.f[panel];
+  ui.all[panel] = false;
+  ui.focus = panel;
+  writeHash();
+  rerender(panel);
+}
+
+// URL hash: win, ghas.win, <panel>.<facet>, <panel>.q, at=<panel>
+function writeHash() {
+  const p = new URLSearchParams();
+  p.set('win', ui.win);
+  p.set('ghas.win', ui.ghasWin);
+  for (const [panel, f] of Object.entries(ui.f)) for (const [k, v] of Object.entries(f)) p.set(`${panel}.${k}`, v);
+  for (const [panel, q] of Object.entries(ui.q)) if (q) p.set(`${panel}.q`, q);
+  if (ui.focus) p.set('at', ui.focus);
+  history.replaceState(null, '', '#' + p.toString());
+}
+function readHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  ui.f = {};
+  ui.q = {};
+  for (const [k, v] of p) {
+    if (k === 'win') ui.win = Number(v) || ui.win;
+    else if (k === 'ghas.win') ui.ghasWin = Number(v) || ui.ghasWin;
+    else if (k === 'at') ui.focus = v;
+    else {
+      const i = k.indexOf('.');
+      if (i < 1) continue;
+      const panel = k.slice(0, i), facet = k.slice(i + 1);
+      if (facet === 'q') ui.q[panel] = v;
+      else (ui.f[panel] ||= {})[facet] = v;
+    }
+  }
+}
+
+const RENDER = {};
+// Re-render one panel, keeping focus and caret in its search box.
+function rerender(panel) {
+  const a = document.activeElement;
+  const typing = a?.dataset?.search === panel ? [a.selectionStart, a.selectionEnd] : null;
+  now = Date.now();
+  (RENDER[panel] || renderAll)();
+  renderKpis();
+  if (typing) {
+    const n = document.querySelector(`[data-search="${CSS.escape(panel)}"]`);
+    if (n) { n.focus(); n.setSelectionRange(...typing); }
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-facet],[data-unfacet],[data-clearall],[data-copylink],[data-more]');
+  if (!t) return;
+  const panel = t.dataset.panel || t.dataset.clearall || t.dataset.copylink || t.dataset.more;
+  if (t.dataset.facet) setFacet(panel, t.dataset.facet, t.dataset.key, t.dataset.set !== '1');
+  else if (t.dataset.unfacet) setFacet(panel, t.dataset.unfacet, null);
+  else if (t.dataset.clearall) { delete ui.f[panel]; delete ui.q[panel]; setFacet(panel, '_', null); }
+  else if (t.dataset.more) { ui.all[panel] = !ui.all[panel]; rerender(panel); }
+  else if (t.dataset.copylink) {
+    ui.focus = panel;
+    writeHash();
+    navigator.clipboard?.writeText(location.href).then(() => { t.textContent = 'Copied'; setTimeout(() => { t.textContent = 'Copy link'; }, 1500); });
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[data-facet][role="button"]')) { e.preventDefault(); e.target.click(); }
+});
+document.addEventListener('input', (e) => {
+  const panel = e.target.dataset?.search;
+  if (!panel) return;
+  ui.q[panel] = e.target.value;
+  ui.all[panel] = false;
+  ui.focus = panel;
+  writeHash();
+  rerender(panel);
+});
+addEventListener('hashchange', () => { readHash(); renderAll(); });
 
 /* ---------- shell ---------- */
 function sourceState(key) {
@@ -336,11 +462,12 @@ function wfState(wf) {
   return ['idle', pretty(last.conclusion)];
 }
 const STATE_ICON = { pass: ICON.good, fail: ICON.critical, run: ICON.running, idle: ICON.idle, late: ICON.warn };
+RENDER.actions = () => renderActions();
 
 function renderActions() {
   const g = sectionGuard('actions', '#sec-actions', '#actions-body');
   const opts = [24, 72, 168].filter((h) => h <= (snap.sources.actions?.data?.lookbackHours || 168)).map((h) => [h, winLabel(h)]);
-  seg($('#win'), opts, ui.win, (v) => { ui.win = v; store.set('win', v); renderAll(); });
+  seg($('#win'), opts, ui.win, (v) => { ui.win = v; store.set('win', v); ui.focus = 'actions'; writeHash(); renderAll(); });
   if (!g) return;
   const d = g.data;
   const since = now - ui.win * H;
@@ -376,7 +503,8 @@ function renderActions() {
     }
   }
 
-  $('#actions-body').innerHTML = `${g.banner}
+  const hidden = d.repos.reduce((n, r) => n + (r.hidden || 0), 0);
+  $('#actions-body').innerHTML = `${g.banner}${hidden ? `<div class="muted small rules-note">${plural(hidden, 'run')} hidden by config rules</div>` : ''}
     <div class="sub-h" style="margin-top:0"><h3>Runs over time · all workflows</h3><span class="muted small">${fmt.format(st.runs)} runs in ${winLabel(ui.win)}</span></div>
     ${legend([['bg-good', 'Succeeded'], ['bg-crit', 'Failed'], ['bg-neutral', 'Cancelled / other']])}
     <div class="chart" id="act-chart"></div>
@@ -396,6 +524,13 @@ function renderActions() {
 
 /* ---------- jira ---------- */
 const CAT = { new: ['bg-s1', 'To do'], indeterminate: ['bg-s2', 'In progress'], done: ['bg-s3', 'Done'] };
+FACETS.jira = {
+  status: { label: 'Status', get: (i) => i.status },
+  assignee: { label: 'Assignee', get: (i) => i.assignee || 'Unassigned' },
+  priority: { label: 'Priority', get: (i) => i.priority || 'None' },
+  type: { label: 'Type', get: (i) => i.type || 'None' },
+};
+SEARCH.jira = (i) => `${i.key} ${i.summary} ${i.assignee || ''} ${i.reporter || ''} ${(i.labels || []).join(' ')}`;
 
 function renderJira() {
   const g = sectionGuard('jira', '#sec-jira', '#jira-body');
@@ -403,48 +538,47 @@ function renderJira() {
   const d = g.data;
   $('#jira-open').hidden = false;
   $('#jira-open').href = d.searchUrl;
-  const open = d.issues.filter((i) => i.category !== 'done');
+  const items = applyFilters('jira', d.issues);
+  const open = items.filter((i) => i.category !== 'done');
   const stale = open.filter((i) => now - Date.parse(i.updated) > d.staleDays * D);
-  const un = open.filter((i) => !i.assignee);
-  const ages = open.map((i) => now - Date.parse(i.created));
-  const resolved = d.issues.filter((i) => i.resolved && now - Date.parse(i.resolved) <= d.lookbackDays * D).length;
-  const medAge = median(ages);
+  const medAge = median(open.map((i) => now - Date.parse(i.created)));
+  const resolved = items.filter((i) => i.resolved && now - Date.parse(i.resolved) <= d.lookbackDays * D).length;
 
   const minis = [
-    ['Open', open.length], ['In progress', open.filter((i) => i.category === 'indeterminate').length], ['Unassigned', un.length],
+    ['Open', open.length], ['In progress', open.filter((i) => i.category === 'indeterminate').length], ['Unassigned', open.filter((i) => !i.assignee).length],
     [`Stale · ${d.staleDays}d+`, stale.length], ['Median open age', medAge == null ? '—' : `${Math.round(medAge / D)}d`], [`Resolved · ${d.lookbackDays}d`, resolved],
   ].map(([l, v]) => `<div class="mini"><div class="m-label">${esc(l)}</div><div class="m-val">${typeof v === 'number' ? fmt.format(v) : v}</div></div>`).join('');
 
+  const catOf = new Map(d.issues.map((i) => [i.status, i.category]));
   const order = { new: 0, indeterminate: 1, done: 2 };
-  const statuses = countBy(d.issues, (i) => i.status).map(([s, v]) => {
-    const cat = d.issues.find((i) => i.status === s).category;
-    return { label: s, key: s, v, cls: CAT[cat]?.[0] || 'bg-neutral', tip: CAT[cat]?.[1], cat };
-  }).sort((a, b) => order[a.cat] - order[b.cat] || b.v - a.v);
+  const statusBars = facetBars('jira', 'status', d.issues, {
+    limit: 12,
+    cls: (s) => CAT[catOf.get(s)]?.[0] || 'bg-neutral',
+    sort: (a, b) => (order[catOf.get(a.key)] ?? 3) - (order[catOf.get(b.key)] ?? 3) || b.v - a.v,
+  });
 
-  let list = d.issues;
-  if (ui.jiraStatus) list = list.filter((i) => i.status === ui.jiraStatus);
-  if (ui.jiraQuery) { const q = ui.jiraQuery.toLowerCase(); list = list.filter((i) => `${i.key} ${i.summary} ${i.assignee || ''} ${i.reporter || ''}`.toLowerCase().includes(q)); }
   const { key: sk, dir } = ui.jiraSort;
-  list = [...list].sort((a, b) => {
+  const list = [...items].sort((a, b) => {
     const va = a[sk] ?? '', vb = b[sk] ?? '';
     return (sk === 'created' || sk === 'updated' ? Date.parse(va) - Date.parse(vb) : String(va).localeCompare(String(vb))) * dir;
   });
   const LIMIT = 25;
-  const shown = ui.jiraAll ? list : list.slice(0, LIMIT);
+  const shown = ui.all.jira ? list : list.slice(0, LIMIT);
   const arrow = (k) => (sk === k ? (dir > 0 ? ' ↑' : ' ↓') : '');
 
-  $('#jira-body').innerHTML = `${g.banner}${d.truncated ? '<div class="alert warn">Result capped by <code>jira.maxIssues</code>; numbers cover the first page set only.</div>' : ''}
+  $('#jira-body').innerHTML = `${g.banner}${d.truncated ? '<div class="alert warn">Result capped by <code>jira.maxIssues</code>; numbers cover the fetched issues only.</div>' : ''}
+    ${d.hidden ? `<div class="muted small rules-note">${plural(d.hidden, 'issue')} hidden by config rules</div>` : ''}
     <div class="minis">${minis}</div>
     <div class="grid-2">
-      <div><h3>By status <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· click to filter</span></h3>
-        ${legend(Object.values(CAT))}${hbars(statuses, { clickable: true, active: ui.jiraStatus })}</div>
+      <div><h3>By status</h3>${legend(Object.values(CAT))}${statusBars}</div>
       <div><h3>Created per day · ${d.lookbackDays}d</h3><div class="chart" id="jira-chart"></div></div>
     </div>
-    <div class="toolbar">
-      <input class="input" id="jira-q" type="search" placeholder="Filter by key, summary, person…" value="${esc(ui.jiraQuery)}" aria-label="Filter tickets">
-      ${ui.jiraStatus ? `<span class="filter-pill">Status: ${esc(ui.jiraStatus)}<button id="jira-clear" aria-label="Clear status filter">×</button></span>` : ''}
-      <span class="muted small">${plural(list.length, 'ticket')}</span>
+    <div class="grid-3 breakdowns">
+      <div><h3>Assignee</h3>${facetBars('jira', 'assignee', d.issues)}</div>
+      <div><h3>Priority</h3>${facetBars('jira', 'priority', d.issues)}</div>
+      <div><h3>Type</h3>${facetBars('jira', 'type', d.issues)}</div>
     </div>
+    ${filterBar('jira', list.length, 'ticket')}
     <div class="tbl-wrap"><table>
       <thead><tr>
         <th class="sortable" data-sort="key">Key${arrow('key')}</th><th>Summary</th><th class="sortable" data-sort="status">Status${arrow('status')}</th>
@@ -460,81 +594,87 @@ function renderJira() {
           <td class="r num" data-tip="${esc('Created ' + esc(dateStr(i.created)))}">${rel(i.created).replace(' ago', '')}</td>
           <td class="r">${rel(i.updated)}${isStale ? '<span class="stale-tag">stale</span>' : ''}</td></tr>`;
       }).join('') || '<tr><td colspan="7" class="empty">No tickets match</td></tr>'}</tbody></table></div>
-    ${list.length > LIMIT ? `<button class="link-btn" id="jira-more">${ui.jiraAll ? 'Show fewer' : `Show all ${list.length}`}</button>` : ''}`;
+    ${list.length > LIMIT ? `<button class="link-btn" type="button" data-more="jira">${ui.all.jira ? 'Show fewer' : `Show all ${fmt.format(list.length)}`}</button>` : ''}`;
 
   const days = d.lookbackDays;
   const from = new Date(now - (days - 1) * D); from.setHours(0, 0, 0, 0);
-  const b = bucketize(d.issues, (i) => i.created, from.getTime(), from.getTime() + days * D, D, (xs) => [{ v: xs.length, cls: 'f-s1', name: 'Created' }]).map((x) => ({ ...x, label: dayStr(x.t0) }));
+  const b = bucketize(items, (i) => i.created, from.getTime(), from.getTime() + days * D, D, (xs) => [{ v: xs.length, cls: 'f-s1', name: 'Created' }]).map((x) => ({ ...x, label: dayStr(x.t0) }));
   columns($('#jira-chart'), b, { height: 170 });
 
-  const body = $('#jira-body');
-  body.querySelectorAll('.hbar.clickable').forEach((el) => {
-    const pick = () => { ui.jiraStatus = ui.jiraStatus === el.dataset.key ? null : el.dataset.key; ui.jiraAll = false; renderJira(); };
-    el.onclick = pick;
-    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } };
-  });
-  const q = $('#jira-q');
-  q.oninput = () => { ui.jiraQuery = q.value; const pos = q.selectionStart; renderJira(); const n = $('#jira-q'); n.focus(); n.setSelectionRange(pos, pos); };
-  const c = $('#jira-clear'); if (c) c.onclick = () => { ui.jiraStatus = null; renderJira(); };
-  const m = $('#jira-more'); if (m) m.onclick = () => { ui.jiraAll = !ui.jiraAll; renderJira(); };
-  body.querySelectorAll('th.sortable').forEach((th) => (th.onclick = () => {
+  $('#jira-body').querySelectorAll('th.sortable').forEach((th) => (th.onclick = () => {
     const k = th.dataset.sort;
     ui.jiraSort = { key: k, dir: ui.jiraSort.key === k ? -ui.jiraSort.dir : -1 };
     store.set('jiraSort', ui.jiraSort);
     renderJira();
   }));
 }
+RENDER.jira = renderJira;
 
 /* ---------- GHAS ---------- */
 const TOOL = { 'code-scanning': ['bg-s1', 'f-s1', 'Code scanning'], 'secret-scanning': ['bg-s2', 'f-s2', 'Secret scanning'], dependabot: ['bg-s3', 'f-s3', 'Dependabot'] };
+FACETS.ghas = {
+  org: { label: 'Org', get: (i) => i.org },
+  tool: { label: 'Tool', get: (i) => i.tool, fmt: (t) => TOOL[t]?.[2] || t },
+  reason: { label: 'Reason', get: (i) => reasonLabel(i.reason) },
+  by: { label: 'Dismissed by', get: (i) => i.by || 'unknown' },
+  repo: { label: 'Repository', get: (i) => i.repo },
+  title: { label: 'Alert', get: (i) => i.title },
+  severity: { label: 'Severity', get: (i) => i.severity || 'none' },
+};
+SEARCH.ghas = (i) => `${i.title} ${i.repo} ${i.by || ''} ${i.comment || ''} ${i.secretType || ''} ${i.package || ''} ${i.ruleId || ''}`;
 
 function renderGhas() {
   const g = sectionGuard('dismissals', '#sec-ghas', '#ghas-body');
   const lb = snap.sources.dismissals?.data?.lookbackDays || 30;
   const opts = [7, 14, 30, 90].filter((x) => x <= lb).map((x) => [x, `${x}d`]);
   if (ui.ghasWin > lb) ui.ghasWin = lb;
-  seg($('#ghas-win'), opts, ui.ghasWin, (v) => { ui.ghasWin = v; store.set('ghasWin', v); renderAll(); });
+  seg($('#ghas-win'), opts, ui.ghasWin, (v) => { ui.ghasWin = v; store.set('ghasWin', v); ui.focus = 'ghas'; writeHash(); renderAll(); });
   if (!g) return;
   const d = g.data;
   const since = now - ui.ghasWin * D;
-  const orgs = d.orgs.map((o) => ({ ...o, win: o.items.filter((i) => Date.parse(i.at) >= since) }));
-  if (ui.org !== '__all' && !orgs.some((o) => o.org === ui.org)) ui.org = '__all';
-  const items = ui.org === '__all' ? orgs.flatMap((o) => o.win) : orgs.find((o) => o.org === ui.org).win;
-  items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-  const sel = ui.org === '__all' ? orgs : orgs.filter((o) => o.org === ui.org);
+  const base = d.orgs.flatMap((o) => o.items.filter((i) => Date.parse(i.at) >= since).map((i) => (i.org ? i : { ...i, org: o.org })));
+  const items = applyFilters('ghas', base).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  const orgSel = ui.f.ghas?.org;
+  const sel = orgSel ? d.orgs.filter((o) => o.org === orgSel) : d.orgs;
   const errs = sel.flatMap((o) => Object.entries(o.errors).map(([t, e]) => `${o.org} · ${TOOL[t]?.[2] || t}: ${e}`));
+  const hidden = sel.reduce((n, o) => n + (o.hidden || 0), 0);
 
-  const tabs = orgs.length > 1
-    ? `<div class="tabs" role="tablist">${[['__all', 'All orgs', items.length && orgs.reduce((s, o) => s + o.win.length, 0)], ...orgs.map((o) => [o.org, o.org, o.win.length])]
-        .map(([k, l, n]) => `<button role="tab" data-org="${esc(k)}" aria-selected="${ui.org === k}">${esc(l)}<span class="count">${fmt.format(k === '__all' ? orgs.reduce((s, o) => s + o.win.length, 0) : n)}</span></button>`).join('')}</div>`
+  const forTabs = applyFilters('ghas', base, 'org');
+  const orgCount = new Map(countBy(forTabs, (i) => i.org));
+  const tabs = d.orgs.length > 1
+    ? `<div class="tabs" role="tablist">
+        <button role="tab" type="button" data-panel="ghas" data-unfacet="org" aria-selected="${!orgSel}">All orgs<span class="count">${fmt.format(forTabs.length)}</span></button>
+        ${d.orgs.map((o) => `<button role="tab" type="button" data-panel="ghas" data-facet="org" data-set="1" data-key="${esc(o.org)}" aria-selected="${orgSel === o.org}">${esc(o.org)}<span class="count">${fmt.format(orgCount.get(o.org) || 0)}</span></button>`).join('')}
+      </div>`
     : '';
 
+  const forTools = applyFilters('ghas', base, 'tool');
+  const toolSel = ui.f.ghas?.tool;
   const minis = d.tools.filter((t) => TOOL[t]).map((t) => {
-    const n = items.filter((i) => i.tool === t).length;
     const failed = sel.some((o) => o.errors[t]);
-    return `<div class="mini"><div class="m-label"><i class="sw ${TOOL[t][0]}"></i>${TOOL[t][2]}</div><div class="m-val${failed ? ' na' : ''}">${failed ? 'n/a' : fmt.format(n)}</div></div>`;
+    return `<div class="mini clickable${toolSel === t ? ' active' : ''}" data-panel="ghas" data-facet="tool" data-key="${esc(t)}" role="button" tabindex="0" aria-pressed="${toolSel === t}">
+      <div class="m-label"><i class="sw ${TOOL[t][0]}"></i>${TOOL[t][2]}</div><div class="m-val${failed ? ' na' : ''}">${failed ? 'n/a' : fmt.format(forTools.filter((i) => i.tool === t).length)}</div></div>`;
   }).join('');
-  const total = `<div class="mini"><div class="m-label">Total dismissed · ${ui.ghasWin}d</div><div class="m-val">${fmt.format(items.length)}</div></div>`;
+  const total = `<div class="mini"><div class="m-label">Dismissed · ${ui.ghasWin}d</div><div class="m-val">${fmt.format(items.length)}</div></div>`;
 
-  const reasons = countBy(items, (i) => reasonLabel(i.reason)).slice(0, 8).map(([label, v]) => ({ label, v }));
-  const people = countBy(items, (i) => i.by || 'unknown').slice(0, 8).map(([label, v]) => ({ label, v }));
-  const repos = countBy(items, (i) => i.repo).slice(0, 8).map(([label, v]) => ({ label, v }));
   const LIMIT = 15;
-  const shown = ui.ghasAll ? items : items.slice(0, LIMIT);
+  const shown = ui.all.ghas ? items : items.slice(0, LIMIT);
 
   $('#ghas-body').innerHTML = `${g.banner}${tabs}
     ${errs.length ? `<div class="alert warn">${errs.map(esc).join('<br>')}</div>` : ''}
     ${sel.some((o) => o.truncated.length) ? '<div class="alert warn">Some results hit <code>maxPagesPerTool</code>; counts may be low.</div>' : ''}
+    ${hidden ? `<div class="muted small rules-note">${plural(hidden, 'dismissal')} hidden by config rules</div>` : ''}
     <div class="minis">${total}${minis}</div>
     <h3>Dismissals per day</h3>
     ${legend(d.tools.filter((t) => TOOL[t]).map((t) => [TOOL[t][0], TOOL[t][2]]))}
     <div class="chart" id="ghas-chart"></div>
-    <div class="grid-3" style="margin-top:22px">
-      <div><h3>Reason</h3>${hbars(reasons)}</div>
-      <div><h3>Dismissed by</h3>${hbars(people)}</div>
-      <div><h3>Repository</h3>${hbars(repos)}</div>
+    <div class="grid-4 breakdowns">
+      <div><h3>Reason</h3>${facetBars('ghas', 'reason', base)}</div>
+      <div><h3>Dismissed by</h3>${facetBars('ghas', 'by', base)}</div>
+      <div><h3>Repository</h3>${facetBars('ghas', 'repo', base)}</div>
+      <div><h3>Alert</h3>${facetBars('ghas', 'title', base)}</div>
     </div>
-    <div class="sub-h"><h3>Recent dismissals</h3><span class="muted small">${plural(items.length, 'alert')}</span></div>
+    ${filterBar('ghas', items.length, 'dismissal')}
     <div class="tbl-wrap"><table>
       <thead><tr><th>When</th><th>Tool</th><th>Alert</th><th class="hide-sm">Severity</th><th class="hide-sm">Repository</th><th>By</th><th>Reason</th></tr></thead>
       <tbody>${shown.map((i) => `<tr>
@@ -544,17 +684,15 @@ function renderGhas() {
         <td class="hide-sm"><span class="sev ${esc(i.severity || '')}">${esc(i.severity || '—')}</span></td>
         <td class="hide-sm mono">${esc(i.repo)}</td>
         <td>${esc(i.by || '—')}</td>
-        <td class="small"${i.comment ? ` data-tip="${esc('“' + esc(i.comment) + '”')}"` : ''}>${esc(reasonLabel(i.reason))}${i.comment ? ' <span class="muted">💬</span>' : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No dismissals in this window</td></tr>'}</tbody></table></div>
-    ${items.length > LIMIT ? `<button class="link-btn" id="ghas-more">${ui.ghasAll ? 'Show fewer' : `Show all ${items.length}`}</button>` : ''}`;
+        <td class="small"${i.comment ? ` data-tip="${esc('“' + esc(i.comment) + '”')}"` : ''}>${esc(reasonLabel(i.reason))}${i.comment ? ' <span class="muted">💬</span>' : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No dismissals match</td></tr>'}</tbody></table></div>
+    ${items.length > LIMIT ? `<button class="link-btn" type="button" data-more="ghas">${ui.all.ghas ? 'Show fewer' : `Show all ${fmt.format(items.length)}`}</button>` : ''}`;
 
   const from = new Date(now - (ui.ghasWin - 1) * D); from.setHours(0, 0, 0, 0);
   const tools = d.tools.filter((t) => TOOL[t]);
   const b = bucketize(items, (i) => i.at, from.getTime(), from.getTime() + ui.ghasWin * D, D, (xs) => tools.map((t) => ({ v: xs.filter((x) => x.tool === t).length, cls: TOOL[t][1], name: TOOL[t][2] }))).map((x) => ({ ...x, label: dayStr(x.t0) }));
   columns($('#ghas-chart'), b, { height: 150 });
-
-  $('#ghas-body').querySelectorAll('[data-org]').forEach((el) => (el.onclick = () => { ui.org = el.dataset.org; store.set('org', ui.org); ui.ghasAll = false; renderGhas(); }));
-  const m = $('#ghas-more'); if (m) m.onclick = () => { ui.ghasAll = !ui.ghasAll; renderGhas(); };
 }
+RENDER.ghas = renderGhas;
 
 /* ---------- Sonar ---------- */
 function renderSonar() {
@@ -587,6 +725,7 @@ function renderSonar() {
 }
 
 /* ---------- loop ---------- */
+let scrolledToFocus = false;
 function renderAll() {
   if (!snap) return;
   now = Date.now();
@@ -597,6 +736,11 @@ function renderAll() {
   renderJira();
   renderGhas();
   renderSonar();
+  if (!scrolledToFocus && ui.focus && snap.lastRefreshAt) {
+    scrolledToFocus = true;
+    const sec = document.querySelector(`[data-panel-id="${CSS.escape(ui.focus)}"]`);
+    if (sec) sec.scrollIntoView();
+  }
 }
 
 let lastKey = '';
@@ -629,4 +773,5 @@ $('#theme').onclick = () => {
 let rt;
 addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(renderAll, 150); });
 
+readHash();
 poll();
