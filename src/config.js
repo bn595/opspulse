@@ -56,7 +56,7 @@ const DEFAULTS = {
   },
   sonar: {
     enabled: true,
-    url: 'https://sonarcloud.io',
+    url: 'https://sonarqube.us', // EU region: https://sonarcloud.io
     token: 'env:OPSPULSE_SONAR_TOKEN',
     organizations: [],
     staleDays: 30,

@@ -97,7 +97,7 @@
   },
 
   "sonar": {
-    "url": "https://sonarcloud.io",     // US region: https://sonarqube.us
+    "url": "https://sonarqube.us",      // EU region: https://sonarcloud.io
     "token": "keyvault:sonar-token",    // or "env:OPSPULSE_SONAR_TOKEN"
     "organizations": ["your-org"],
     "staleDays": 30,

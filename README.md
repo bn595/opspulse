@@ -162,7 +162,7 @@ Only needed if you're not using Key Vault for a given value. Any `token` / `emai
 
 GitHub Enterprise Server or GHE.com: set `github.apiUrl` (for example `https://github.example.com/api/v3`).
 
-SonarQube Cloud US region: set `sonar.url` to `https://sonarqube.us`.
+The default `sonar.url` is the US region, `https://sonarqube.us`. For the EU region set it to `https://sonarcloud.io`.
 
 ---
 
@@ -223,7 +223,7 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 ### `sonar`
 | key | default | |
 |---|---|---|
-| `url` | `https://sonarcloud.io` | |
+| `url` | `https://sonarqube.us` | EU region: `https://sonarcloud.io` |
 | `organizations` | all orgs you're a member of | |
 | `staleDays` | `30` | "Not analyzed in N days" |
 | `tokenExpiryWarnDays` | `14` | Feed warns when any token on this account expires within N days |

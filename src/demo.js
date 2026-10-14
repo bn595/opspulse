@@ -91,12 +91,12 @@ function dismissals(now, r) {
 
 function sonar(now) {
   return {
-    url: 'https://sonarcloud.io',
+    url: 'https://sonarqube.us',
     staleDays: 30,
     tokenExpiryWarnDays: 14,
     orgs: [
-      { key: 'acme', url: 'https://sonarcloud.io/organizations/acme', projects: { v: 4182 }, stale: { v: 611 }, neverAnalyzed: { v: 143 }, failingGate: { v: 388 } },
-      { key: 'acme-labs', url: 'https://sonarcloud.io/organizations/acme-labs', projects: { v: 297 }, stale: { v: 54 }, neverAnalyzed: { v: 12 }, failingGate: { err: '403 — forbidden' } },
+      { key: 'acme', url: 'https://sonarqube.us/organizations/acme', projects: { v: 4182 }, stale: { v: 611 }, neverAnalyzed: { v: 143 }, failingGate: { v: 388 } },
+      { key: 'acme-labs', url: 'https://sonarqube.us/organizations/acme-labs', projects: { v: 297 }, stale: { v: 54 }, neverAnalyzed: { v: 12 }, failingGate: { err: '403 — forbidden' } },
     ],
     tokens: [
       { name: 'permission-jobs', createdAt: iso(now - 80 * 24 * H), lastConnectionDate: iso(now - 2 * H), expirationDate: iso(now - 0 + 9 * 24 * H) },
