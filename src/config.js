@@ -36,6 +36,7 @@ const DEFAULTS = {
     token: 'env:OPSPULSE_GITHUB_TOKEN',
     actions: {
       enabled: true,
+      refreshMinutes: 10,
       repos: [],
       lookbackHours: 168,
       feedWindowHours: 24,
@@ -45,6 +46,7 @@ const DEFAULTS = {
     },
     dismissals: {
       enabled: true,
+      refreshMinutes: 60,
       orgs: [],
       lookbackDays: 30,
       tools: ['code-scanning', 'secret-scanning', 'dependabot'],
@@ -56,6 +58,7 @@ const DEFAULTS = {
   },
   sonar: {
     enabled: true,
+    refreshMinutes: 60,
     url: 'https://sonarqube.us', // EU region: https://sonarcloud.io
     token: 'env:OPSPULSE_SONAR_TOKEN',
     organizations: [],
@@ -65,6 +68,7 @@ const DEFAULTS = {
   plugins: [],
   jira: {
     enabled: true,
+    refreshMinutes: 10,
     deployment: 'cloud', // cloud | datacenter
     baseUrl: '',
     email: 'env:OPSPULSE_JIRA_EMAIL',

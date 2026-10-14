@@ -15,6 +15,7 @@ const demo = require('./demo');
 const { SecretStore } = require('./secrets');
 const { createAcks } = require('./acks');
 const { loadPlugins, runPlugin, createContext, pluginKey, pluginIdOf } = require('./plugins');
+const { planRefresh } = require('./schedule');
 const CONNECTORS = {
   actions: require('./connectors/actions'),
   dismissals: require('./connectors/dismissals'),
@@ -51,6 +52,9 @@ let store;
 let plugins = [];
 const sources = {};
 const newSource = (extra) => ({ status: 'pending', fetchedAt: null, error: null, data: null, ...extra });
+let revision = 0; // bumps on every change the browser should re-fetch
+const lastAttempt = {};
+function setSource(key, value) { sources[key] = value; revision++; }
 for (const k of Object.keys(CONNECTORS)) sources[k] = newSource();
 function applyNetwork(proxies) { net.configure({ ...cfg.network, proxies }); }
 
@@ -62,7 +66,7 @@ function loadConfig() {
   }
   try { configMtime = fs.statSync(cfg._file).mtimeMs; } catch { configMtime = 0; }
   if (store) store.reconfigure(cfg);
-  else store = new SecretStore(cfg, { applyNetwork, onSignedIn: () => { console.log(`  signed in to Azure as ${store.azure.user || 'unknown user'}`); refresh(); } });
+  else store = new SecretStore(cfg, { applyNetwork, onSignedIn: () => { console.log(`  signed in to Azure as ${store.azure.user || 'unknown user'}`); refresh(true); } });
   applyNetwork({});
   plugins = loadPlugins(DEMO ? [{ path: EXAMPLE_PLUGIN, failureWarn: 5 }] : cfg.plugins, cfg._dir);
   for (const p of plugins) if (p.error) console.warn(`  [plugin ${p.id}] ${p.error}`);
@@ -100,13 +104,46 @@ function saveCache() {
   } catch (e) { console.warn('  could not write cache:', e.message); }
 }
 
-async function refresh() {
+// Minutes between refreshes per source. Plugins use their `refreshMinutes` option.
+function intervals() {
+  const per = { actions: cfg.github.actions.refreshMinutes, dismissals: cfg.github.dismissals.refreshMinutes, sonar: cfg.sonar.refreshMinutes, jira: cfg.jira.refreshMinutes };
+  const enabled = ENABLED();
+  const out = {};
+  for (const k of Object.keys(CONNECTORS)) if (enabled[k]) out[k] = per[k] ?? cfg.server.refreshMinutes;
+  for (const p of plugins) out[pluginKey(p.id)] = p.options.refreshMinutes ?? cfg.server.refreshMinutes;
+  return out;
+}
+const blockedUntil = () => Object.fromEntries(Object.entries(sources).filter(([, s]) => s.retryAt).map(([k, s]) => [k, Date.parse(s.retryAt)]));
+
+// Runs one source. `collect(previous)` gets the source's last data; a rate-limit error carries retryAt.
+async function runSource(key, collect, extra = {}) {
+  lastAttempt[key] = Date.now();
+  setSource(key, { ...sources[key], ...extra, status: 'refreshing' });
+  const t0 = Date.now();
+  try {
+    const data = await collect(sources[key].data);
+    setSource(key, newSource({ ...extra, status: 'ok', fetchedAt: new Date().toISOString(), durationMs: Date.now() - t0, data }));
+  } catch (e) {
+    // Keep the last successful data and mark it stale.
+    const retryAt = e.retryAt ? new Date(e.retryAt).toISOString() : null;
+    setSource(key, { ...sources[key], ...extra, status: retryAt ? 'rate-limited' : 'error', error: e.message, errorAt: new Date().toISOString(), retryAt });
+    console.warn(`  [${key}] ${e.message}`);
+  }
+}
+
+// Refreshes the sources that are due; `force` refreshes all except rate-limited ones.
+async function refresh(force = false) {
   if (refreshing) return refreshing;
   refreshing = (async () => {
     try {
       const m = fs.statSync(cfg._file).mtimeMs;
       if (m !== configMtime) { loadConfig(); console.log('  config changed, reloaded'); }
     } catch { /* config may not exist in demo mode */ }
+
+    const enabled = ENABLED();
+    for (const k of Object.keys(CONNECTORS)) if (!enabled[k] && sources[k].status !== 'disabled') setSource(k, newSource({ status: 'disabled' }));
+    const due = new Set(planRefresh({ intervals: intervals(), lastAttempt, blockedUntil: blockedUntil(), now: Date.now(), force }).due);
+    if (!due.size) return;
 
     let secrets = {};
     if (!DEMO) {
@@ -116,53 +153,34 @@ async function refresh() {
       for (const e of r.errors) console.warn(`  [secrets] ${e}`);
     }
 
-    const enabled = ENABLED();
     const demoData = DEMO ? demo.generate() : null;
     const NEEDS = { actions: 'github', dismissals: 'github', sonar: 'sonar', jira: 'jira' };
     await Promise.all(
-      Object.entries(CONNECTORS).map(async ([key, conn]) => {
-        if (!enabled[key]) { sources[key] = newSource({ status: 'disabled' }); return; }
+      Object.entries(CONNECTORS).filter(([key]) => due.has(key)).map(([key, conn]) => {
         if (!DEMO && store.status[NEEDS[key]] === 'pending') {
-          // Token is in Key Vault and no one has signed in; skip the API call.
-          sources[key] = { ...sources[key], status: 'error', error: 'Waiting for Key Vault sign-in', errorAt: new Date().toISOString() };
-          return;
+          // Token is in Key Vault and no one has signed in; skip the API call and retry on the next tick.
+          setSource(key, { ...sources[key], status: 'error', error: 'Waiting for Key Vault sign-in', errorAt: new Date().toISOString() });
+          return null;
         }
-        sources[key] = { ...sources[key], status: 'refreshing' };
-        const t0 = Date.now();
-        try {
-          const data = DEMO ? demoData[key] : await conn.collect(cfg, secrets);
-          sources[key] = { status: 'ok', fetchedAt: new Date().toISOString(), durationMs: Date.now() - t0, error: null, data };
-        } catch (e) {
-          // Keep the last successful data and mark it stale.
-          sources[key] = { ...sources[key], status: 'error', error: e.message, errorAt: new Date().toISOString() };
-          console.warn(`  [${key}] ${e.message}`);
-        }
+        return runSource(key, (previous) => (DEMO ? demoData[key] : conn.collect(cfg, secrets, previous)));
       })
     );
-    // Plugins run after the built-in connectors so ctx.sources holds this refresh's data.
+    // Plugins run after the built-in connectors so ctx.sources holds current data.
     const builtins = Object.fromEntries(Object.keys(CONNECTORS).map((k) => [k, sources[k].data || null]));
-    await Promise.all(plugins.map((p) => refreshPlugin(p, secrets, builtins)));
+    await Promise.all(plugins.filter((p) => due.has(pluginKey(p.id))).map((p) => {
+      const key = pluginKey(p.id);
+      if (p.error) { lastAttempt[key] = Date.now(); setSource(key, newSource({ status: 'error', title: p.title, error: p.error })); return null; }
+      return runSource(key, (previous) => runPlugin(p, createContext({ cfg, secrets, store, options: p.options, sources: builtins, previous })), { title: p.title });
+    }));
     lastRefreshAt = new Date().toISOString();
     saveCache();
   })().finally(() => {
     refreshing = null;
-    nextRefreshAt = new Date(Date.now() + cfg.server.refreshMinutes * 60e3).toISOString();
+    const next = planRefresh({ intervals: intervals(), lastAttempt, blockedUntil: blockedUntil(), now: Date.now() }).nextAt;
+    nextRefreshAt = next ? new Date(next).toISOString() : null;
+    revision++;
   });
   return refreshing;
-}
-
-async function refreshPlugin(p, secrets, builtins) {
-  const key = pluginKey(p.id);
-  if (p.error) { sources[key] = newSource({ status: 'error', title: p.title, error: p.error }); return; }
-  sources[key] = { ...sources[key], status: 'refreshing' };
-  const t0 = Date.now();
-  try {
-    const data = await runPlugin(p, createContext({ cfg, secrets, store, options: p.options, sources: builtins }));
-    sources[key] = { status: 'ok', title: p.title, fetchedAt: new Date().toISOString(), durationMs: Date.now() - t0, error: null, data };
-  } catch (e) {
-    sources[key] = { ...sources[key], status: 'error', error: e.message, errorAt: new Date().toISOString() };
-    console.warn(`  [${key}] ${e.message}`);
-  }
 }
 
 function snapshot() {
@@ -174,6 +192,7 @@ function snapshot() {
     now: new Date().toISOString(),
     lastRefreshAt,
     nextRefreshAt,
+    revision,
     refreshing: !!refreshing,
     config: config.publicView(cfg, auth),
     auth,
@@ -238,7 +257,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST') {
       if (!sameOrigin(req)) return send(res, 403, { error: 'missing header' });
-      if (p === '/api/refresh') { refresh(); return send(res, 202, { ok: true }); }
+      if (p === '/api/refresh') { refresh(true); return send(res, 202, { ok: true }); }
       if (p === '/api/auth/device') { const d = await store.startDeviceLogin(); return send(res, 200, { userCode: d.userCode, verificationUri: d.verificationUri, message: d.message, expiresAt: d.expiresAt }); }
       if (p === '/api/auth/signout') { store.signOut(); return send(res, 200, { ok: true }); }
       if (FEED_ACTIONS[p]) {
@@ -302,4 +321,4 @@ if (cfg.server.host !== '127.0.0.1' && cfg.server.host !== 'localhost' && cfg.se
 }
 listen(Number(opt('--port')) || cfg.server.port);
 refresh();
-setInterval(refresh, Math.max(1, cfg.server.refreshMinutes) * 60e3);
+setInterval(() => refresh(), 60e3); // each source refreshes on its own interval

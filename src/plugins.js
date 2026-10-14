@@ -125,10 +125,11 @@ function authedGet(name, baseUrl, headers) {
 }
 
 // What a plugin's collect(ctx) receives. Network calls go through the shared client, so proxies apply.
-function createContext({ cfg, secrets, store, options, sources }) {
+function createContext({ cfg, secrets, store, options, sources, previous = null }) {
   return {
     options,
     sources,
+    previous, // this plugin's last successful result, for incremental fetching
     config: cfg,
     secrets,
     secret: (ref) => store.resolveRef(ref),
