@@ -51,7 +51,7 @@ async function collect(cfg, secrets) {
   try {
     await request(`${base}/rest/api/${cloud ? 3 : 2}/myself`, { headers, retries: 0, platform: 'jira' });
   } catch (e) {
-    if (e instanceof RateLimitError) throw e;
+    RateLimitError.rethrow(e);
     throw new Error(e.status === 401 || e.status === 403 || e.status === 404 ? `Jira rejected the credentials (${e.status}) — check jira.email / jira.token` : e.message);
   }
 

@@ -143,3 +143,23 @@ test('a platform-specific timeout overrides the default', async (t) => {
   await assert.rejects(client.request(api.url, { platform: 'slowplat', retries: 0 }), /timed out after 0\.1s/);
   assert.deepEqual((await client.request(api.url, { platform: 'fastplat', retries: 0 })).data, {});
 });
+
+test('a response that was already in flight does not lift a new block', async (t) => {
+  const [hits, handler] = counting((req, res) => (req.url === '/slow' ? setTimeout(() => json(res, {}), 200) : json(res, {}, 429)));
+  const api = await serve(handler);
+  t.after(api.close);
+  clockAt(T0);
+
+  const slow = client.request(`${api.url}/slow`, { platform: 'gh-inflight' });
+  await assert.rejects(client.request(`${api.url}/fast`, { platform: 'gh-inflight' }), (e) => e instanceof client.RateLimitError);
+  await slow;
+  await assert.rejects(client.request(`${api.url}/fast`, { platform: 'gh-inflight' }), (e) => e instanceof client.RateLimitError);
+  assert.equal(hits.n, 2, 'the request after the late success is not sent');
+});
+
+test('a GitHub secondary rate limit without Retry-After blocks the platform', async (t) => {
+  const api = await serve((req, res) => json(res, { message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' }, 403));
+  t.after(api.close);
+  clockAt(T0);
+  await assert.rejects(client.request(api.url, { platform: 'gh-secondary' }), (e) => e.retryAt === T0 + 2 * 60e3);
+});

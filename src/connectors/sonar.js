@@ -12,7 +12,7 @@ async function collect(cfg, secrets) {
   const get = (p) => request(base + p, { headers, platform: 'sonar' }).then((r) => r.data);
   const total = (p) => get(p).then((d) => d?.paging?.total ?? d?.total ?? null);
   // A count that fails shows n/a; a rate limit fails the whole source so it is retried later.
-  const soft = (p) => p.then((v) => ({ v }), (e) => { if (e instanceof RateLimitError) throw e; return { err: e.message }; });
+  const soft = (p) => p.then((v) => ({ v }), (e) => { RateLimitError.rethrow(e); return { err: e.message }; });
 
   const valid = await get('/api/authentication/validate');
   if (!valid?.valid) throw new Error('SonarQube Cloud says the token is not valid');

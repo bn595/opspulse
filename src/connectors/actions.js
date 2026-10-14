@@ -104,7 +104,7 @@ async function collect(cfg, secrets) {
       try {
         return await fetchRepo(api, entry, ac, filters[i]);
       } catch (e) {
-        if (e instanceof RateLimitError) throw e;
+        RateLimitError.rethrow(e);
         return { repo: entry.repo, label: entry.label || entry.repo, error: e.message, workflows: [] };
       }
     })

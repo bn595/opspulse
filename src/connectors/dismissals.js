@@ -103,6 +103,7 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
   const keep = rules.compile(dc, 'github.dismissals');
   const windowStart = now - dc.lookbackDays * 86400e3;
   const tools = dc.tools.filter((t) => TOOLS[t]);
+  if (!tools.length) throw new Error(`github.dismissals.tools lists no supported alert types (use ${Object.keys(TOOLS).join(', ')})`);
   const scopes = enterprise ? [`enterprises/${enterprise}`] : dc.orgs.map((o) => `orgs/${o}`);
 
   // Any change to what is fetched or filtered invalidates the merged state.
@@ -118,18 +119,23 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
     try {
       return { ...s, ok: true, syncedAt: now, ...(await readStream(api, path, s.tool, since, keep, dc.maxPagesPerTool)) };
     } catch (e) {
-      if (e instanceof RateLimitError) throw e;
+      RateLimitError.rethrow(e);
       return { ...s, ok: false, error: e.message };
     }
   });
   if (results.every((r) => !r.ok)) throw new Error(results[0].error);
 
-  // Merge by alert URL: newer reads replace older ones; a failed stream keeps its previous items.
+  // Merge by alert URL: newer reads replace older ones. Incremental reads start from everything
+  // previously known; a full resync starts empty except for streams that failed, which keep their
+  // previous items until they can be read again.
   const merged = new Map();
   const hidden = new Map();
-  if (incremental) {
-    for (const i of previous.orgs.flatMap((o) => o.items)) merged.set(i.url, i);
-    for (const [id, h] of Object.entries(prev.hidden || {})) hidden.set(id, h);
+  const sameConfig = prev && prev.fingerprint === fingerprint;
+  const failed = results.filter((r) => !r.ok);
+  const fromFailedStream = (i) => failed.some((r) => r.tool === i.tool && (enterprise || r.scope === `orgs/${i.org}`));
+  if (sameConfig) {
+    for (const i of previous.orgs.flatMap((o) => o.items)) if (incremental || fromFailedStream(i)) merged.set(i.url, i);
+    if (incremental) for (const [id, h] of Object.entries(prev.hidden || {})) hidden.set(id, h);
   }
   for (const r of results.filter((x) => x.ok)) {
     for (const i of r.items) { merged.set(i.url, i); hidden.delete(i.url); }
@@ -154,6 +160,10 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
   const streamsState = {};
   for (const r of results) streamsState[r.id] = r.ok ? { syncedAt: r.syncedAt } : (incremental ? prev.streams[r.id] : null) || {};
   const capped = results.some((r) => r.capped);
+  // When the last full sync happened: a capped read leaves a gap, so force one on the next refresh.
+  let fullAt = now;
+  if (capped) fullAt = 0;
+  else if (incremental) fullAt = prev.fullAt;
   return {
     mode: enterprise ? 'enterprise' : 'orgs',
     enterprise: enterprise || null,
@@ -162,8 +172,7 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
     errors,
     truncated,
     orgs: [...orgs.values()].sort((a, b) => a.org.localeCompare(b.org)),
-    // A capped read leaves a gap, so the next refresh starts over.
-    _sync: { fingerprint, fullAt: incremental && !capped ? prev.fullAt : capped ? 0 : now, streams: streamsState, hidden: Object.fromEntries(hidden) },
+    _sync: { fingerprint, fullAt, streams: streamsState, hidden: Object.fromEntries(hidden) },
   };
 }
 

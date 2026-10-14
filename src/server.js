@@ -16,6 +16,7 @@ const { SecretStore } = require('./secrets');
 const { createAcks } = require('./acks');
 const { loadPlugins, runPlugin, createContext, pluginKey, pluginIdOf } = require('./plugins');
 const { planRefresh } = require('./schedule');
+const { BUILTIN, publicSources } = require('./sources');
 const CONNECTORS = {
   actions: require('./connectors/actions'),
   dismissals: require('./connectors/dismissals'),
@@ -76,12 +77,7 @@ function loadConfig() {
 }
 loadConfig();
 
-const ENABLED = () => ({
-  actions: cfg.github.actions.enabled,
-  dismissals: cfg.github.dismissals.enabled,
-  sonar: cfg.sonar.enabled,
-  jira: cfg.jira.enabled,
-});
+const enabled = (key) => BUILTIN[key].section(cfg).enabled;
 
 const CACHE_FILE = path.join(cfg._dir, '.cache', DEMO ? 'demo.json' : 'snapshot.json');
 const acks = createAcks({ file: path.join(cfg._dir, '.cache', DEMO ? 'demo-acks.json' : 'acks.json') });
@@ -106,10 +102,8 @@ function saveCache() {
 
 // Minutes between refreshes per source. Plugins use their `refreshMinutes` option.
 function intervals() {
-  const per = { actions: cfg.github.actions.refreshMinutes, dismissals: cfg.github.dismissals.refreshMinutes, sonar: cfg.sonar.refreshMinutes, jira: cfg.jira.refreshMinutes };
-  const enabled = ENABLED();
   const out = {};
-  for (const k of Object.keys(CONNECTORS)) if (enabled[k]) out[k] = per[k] ?? cfg.server.refreshMinutes;
+  for (const k of Object.keys(CONNECTORS)) if (enabled(k)) out[k] = BUILTIN[k].section(cfg).refreshMinutes ?? cfg.server.refreshMinutes;
   for (const p of plugins) out[pluginKey(p.id)] = p.options.refreshMinutes ?? cfg.server.refreshMinutes;
   return out;
 }
@@ -132,16 +126,20 @@ async function runSource(key, collect, extra = {}) {
 }
 
 // Refreshes the sources that are due; `force` refreshes all except rate-limited ones.
+// A forced refresh requested while one is running runs as soon as it finishes.
+let forceQueued = false;
 async function refresh(force = false) {
-  if (refreshing) return refreshing;
+  if (refreshing) {
+    if (force) forceQueued = true;
+    return refreshing;
+  }
   refreshing = (async () => {
     try {
       const m = fs.statSync(cfg._file).mtimeMs;
-      if (m !== configMtime) { loadConfig(); console.log('  config changed, reloaded'); }
+      if (m !== configMtime) { loadConfig(); revision++; console.log('  config changed, reloaded'); }
     } catch { /* config may not exist in demo mode */ }
 
-    const enabled = ENABLED();
-    for (const k of Object.keys(CONNECTORS)) if (!enabled[k] && sources[k].status !== 'disabled') setSource(k, newSource({ status: 'disabled' }));
+    for (const k of Object.keys(CONNECTORS)) if (!enabled(k) && sources[k].status !== 'disabled') setSource(k, newSource({ status: 'disabled' }));
     const due = new Set(planRefresh({ intervals: intervals(), lastAttempt, blockedUntil: blockedUntil(), now: Date.now(), force }).due);
     if (!due.size) return;
 
@@ -149,17 +147,18 @@ async function refresh(force = false) {
     if (!DEMO) {
       const r = await store.resolve();
       secrets = r.values;
+      if (JSON.stringify(r.errors) !== JSON.stringify(secretErrors)) revision++;
       secretErrors = r.errors;
       for (const e of r.errors) console.warn(`  [secrets] ${e}`);
     }
 
     const demoData = DEMO ? demo.generate() : null;
-    const NEEDS = { actions: 'github', dismissals: 'github', sonar: 'sonar', jira: 'jira' };
     await Promise.all(
       Object.entries(CONNECTORS).filter(([key]) => due.has(key)).map(([key, conn]) => {
-        if (!DEMO && store.status[NEEDS[key]] === 'pending') {
+        if (!DEMO && store.status[BUILTIN[key].secret] === 'pending') {
           // Token is in Key Vault and no one has signed in; skip the API call and retry on the next tick.
-          setSource(key, { ...sources[key], status: 'error', error: 'Waiting for Key Vault sign-in', errorAt: new Date().toISOString() });
+          const waiting = 'Waiting for Key Vault sign-in';
+          if (sources[key].error !== waiting) setSource(key, { ...sources[key], status: 'error', error: waiting, errorAt: new Date().toISOString() });
           return null;
         }
         return runSource(key, (previous) => (DEMO ? demoData[key] : conn.collect(cfg, secrets, previous)));
@@ -170,7 +169,7 @@ async function refresh(force = false) {
     await Promise.all(plugins.filter((p) => due.has(pluginKey(p.id))).map((p) => {
       const key = pluginKey(p.id);
       if (p.error) { lastAttempt[key] = Date.now(); setSource(key, newSource({ status: 'error', title: p.title, error: p.error })); return null; }
-      return runSource(key, (previous) => runPlugin(p, createContext({ cfg, secrets, store, options: p.options, sources: builtins, previous })), { title: p.title });
+      return runSource(key, (previous) => runPlugin(p, createContext({ cfg, secrets, store, options: p.options, sources: builtins, previous })), { title: p.title, platform: p.options.platform || null });
     }));
     lastRefreshAt = new Date().toISOString();
     saveCache();
@@ -178,18 +177,12 @@ async function refresh(force = false) {
     refreshing = null;
     const next = planRefresh({ intervals: intervals(), lastAttempt, blockedUntil: blockedUntil(), now: Date.now() }).nextAt;
     nextRefreshAt = next ? new Date(next).toISOString() : null;
-    revision++;
+    if (forceQueued) {
+      forceQueued = false;
+      setImmediate(() => refresh(true));
+    }
   });
   return refreshing;
-}
-
-// Sources as sent to the browser: connector sync state (`_sync`) stays on the server.
-function publicSources() {
-  return Object.fromEntries(Object.entries(sources).map(([k, s]) => {
-    if (!s.data?._sync) return [k, s];
-    const { _sync, ...data } = s.data;
-    return [k, { ...s, data }];
-  }));
 }
 
 function snapshot() {
@@ -206,7 +199,7 @@ function snapshot() {
     refreshing: !!refreshing,
     config: config.publicView(cfg, auth),
     auth,
-    sources: publicSources(),
+    sources: publicSources(sources),
     feed: acks.annotate(feed.build(sources, cfg, Date.now(), DEMO ? [] : extra)),
   };
 }

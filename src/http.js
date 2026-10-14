@@ -31,6 +31,11 @@ class RateLimitError extends ApiError {
     super(message, 429, url);
     this.retryAt = retryAt;
   }
+
+  // For handlers that turn errors into partial results: a rate limit must fail the whole source.
+  static rethrow(e) {
+    if (e instanceof RateLimitError) throw e;
+  }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -213,7 +218,8 @@ async function request(url, { method = 'GET', headers = {}, body, platform = 'de
       throw block(platform, url, until, `rate limited by ${host}`);
     }
     if (res.status >= 500 && attempt++ < retries) { await sleep(1500 * attempt); continue; }
-    if (res.status < 400) { l.backoff = 0; l.blockedUntil = null; }
+    // A success resets the backoff, unless a block was set while this request was in flight.
+    if (res.status < 400 && !(l.blockedUntil > net.now())) l.backoff = 0;
 
     let data = null;
     if (res.text) {

@@ -34,9 +34,12 @@ class SecretStore {
     this.entra = this.kv.tenantId && this.kv.clientId ? new EntraClient(this.kv) : null;
   }
 
-  // Key Vault is needed for required secrets, and is available to plugins via ctx.secret().
+  // Secrets of enabled sources, and any configured proxy.
+  needed(key) { return this.required.has(key) || key.startsWith('proxy.'); }
+
+  // Key Vault is needed for needed secrets, and is available to plugins via ctx.secret().
   usesVault() {
-    return Object.entries(this.refs).some(([k, r]) => KV.test(r || '') && (this.required.has(k) || k.startsWith('proxy.'))) || (this.hasPlugins && !!this.kv.vaultUrl);
+    return Object.entries(this.refs).some(([k, r]) => KV.test(r || '') && this.needed(k)) || (this.hasPlugins && !!this.kv.vaultUrl);
   }
 
   clearCache() {
@@ -78,14 +81,14 @@ class SecretStore {
       if (!ref) { status[key] = 'unset'; values[key] = ''; continue; }
       if (KV.test(ref)) {
         // Vault secrets of disabled sources are not fetched; plugins can still use ctx.secret().
-        if (this.required.has(key) || key.startsWith('proxy.')) kvNames[key] = ref.slice(9).trim();
+        if (this.needed(key)) kvNames[key] = ref.slice(9).trim();
         else { status[key] = 'unset'; values[key] = ''; }
         continue;
       }
       const v = this.resolveLocal(ref);
       values[key] = v;
       status[key] = v ? 'ok' : 'missing';
-      if (!v && this.required.has(key)) errors.push(`${key}: ${ref} is empty — ${ref.startsWith('env:') ? 'set it in .env' : ref.startsWith('file:') ? 'file missing or empty' : 'no value'}`);
+      if (!v && this.needed(key)) errors.push(`${key}: ${ref} is empty — ${ref.startsWith('env:') ? 'set it in .env' : ref.startsWith('file:') ? 'file missing or empty' : 'no value'}`);
     }
     for (const k of Object.keys(this.refs)) if (k.startsWith('proxy.')) proxies[k.slice(6)] = values[k] || '';
     // Apply non-vault proxies first; they may be required to reach the vault.
@@ -118,7 +121,7 @@ class SecretStore {
             } catch (e) {
               values[k] = '';
               status[k] = 'error';
-              if (this.required.has(k) || k.startsWith('proxy.')) errors.push(e.message);
+              if (this.needed(k)) errors.push(e.message);
               if (e.status === 401) { this.azure.accessToken = null; this.azure.expiresAt = 0; }
             }
           }));

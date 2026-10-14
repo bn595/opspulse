@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { BUILTIN } = require('./sources');
 
 const DEFAULTS = {
   server: { host: '127.0.0.1', port: 4777, openBrowser: true, refreshMinutes: 10 },
@@ -87,19 +88,15 @@ const DEFAULTS = {
   },
 };
 
-// Secret references resolved by secrets.js, keyed by internal name.
 // Secrets that enabled built-in sources need; only these are reported when missing.
 function requiredSecrets(cfg) {
   const req = new Set();
-  if (cfg.github.actions.enabled || cfg.github.dismissals.enabled) req.add('github');
-  if (cfg.sonar.enabled) req.add('sonar');
-  if (cfg.jira.enabled) {
-    req.add('jira');
-    if (cfg.jira.deployment !== 'datacenter') req.add('jiraEmail');
-  }
+  for (const s of Object.values(BUILTIN)) if (s.section(cfg).enabled) req.add(s.secret);
+  if (req.has('jira') && cfg.jira.deployment !== 'datacenter') req.add('jiraEmail');
   return req;
 }
 
+// Secret references resolved by secrets.js, keyed by internal name.
 function secretRefs(cfg) {
   return {
     github: cfg.github.token,

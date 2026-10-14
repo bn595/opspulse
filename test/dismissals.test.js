@@ -33,6 +33,7 @@ async function fakeGitHub(t, routes) {
     const u = new URL(req.url, 'http://x');
     requests.push(u.pathname + u.search);
     const all = routes(u.pathname) || [];
+    if (all === 'fail') { res.writeHead(404, { 'content-type': 'application/json' }); return res.end('{"message":"Not Found"}'); }
     const page = Number(u.searchParams.get('page') || 1);
     const items = all.slice((page - 1) * 2, page * 2);
     if (page * 2 < all.length) {
@@ -139,4 +140,25 @@ test('a rate limit fails the whole collection', async (t) => {
   net.configure({ timeoutSeconds: 5, now: () => T0 });
   const cfg = cfgWith(`http://127.0.0.1:${server.address().port}`, { orgs: ['acme', 'labs'] });
   await assert.rejects(dismissals.collect(cfg, { github: 't' }, null, { now: T0 }), (e) => e instanceof net.RateLimitError);
+});
+
+test('a stream that fails during a full resync keeps its previous alerts', async (t) => {
+  let failLabs = false;
+  const gh = await fakeGitHub(t, (p) => {
+    if (p === '/orgs/acme/code-scanning/alerts') return [codeAlert(1, 'acme', T0, 1)];
+    if (p === '/orgs/labs/code-scanning/alerts') return failLabs ? 'fail' : [codeAlert(7, 'labs', T0, 2)];
+    return null;
+  });
+  const cfg = cfgWith(gh.apiUrl, { orgs: ['acme', 'labs'], fullResyncHours: 24 });
+  const first = await dismissals.collect(cfg, { github: 't' }, null, { now: T0 });
+  failLabs = true;
+  const resync = await dismissals.collect(cfg, { github: 't' }, first, { now: T0 + 25 * H });
+
+  assert.deepEqual(byOrg(resync), { acme: ['SQL injection#1'], labs: ['SQL injection#7'] });
+  assert.match(resync.orgs.find((o) => o.org === 'labs').errors['code-scanning'], /^404 /);
+});
+
+test('a configuration without supported alert types is reported clearly', async (t) => {
+  const gh = await fakeGitHub(t, () => []);
+  await assert.rejects(dismissals.collect(cfgWith(gh.apiUrl, { orgs: ['acme'], tools: ['nope'] }), { github: 't' }, null, { now: T0 }), /github\.dismissals\.tools lists no supported alert types/);
 });

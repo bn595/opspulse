@@ -320,7 +320,6 @@ document.addEventListener('input', (e) => {
 addEventListener('hashchange', () => { readHash(); renderAll(); });
 
 /* ---------- shell ---------- */
-const SOURCE_PLATFORM = { actions: 'github', dismissals: 'github', sonar: 'sonar', jira: 'jira' };
 function sourceState(key) {
   const s = snap.sources[key];
   if (!s || s.status === 'disabled') return null;
@@ -328,7 +327,7 @@ function sourceState(key) {
   if (s.status === 'rate-limited') return { cls: 'stale', text: `rate limited, resumes ${rel(s.retryAt)}` };
   if (s.error) return { cls: s.data ? 'stale' : 'err', text: s.error };
   if (s.status === 'cached') return { cls: 'stale', text: 'from cache' };
-  const budget = snap.limits?.[SOURCE_PLATFORM[key]];
+  const budget = snap.limits?.[s.platform];
   const left = budget?.limit ? ` · API budget ${fmt.format(budget.remaining)} / ${fmt.format(budget.limit)}` : '';
   return { cls: 'ok', text: `updated ${rel(s.fetchedAt)} · ${(s.durationMs / 1000).toFixed(1)}s${left}` };
 }
