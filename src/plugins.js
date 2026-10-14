@@ -118,9 +118,9 @@ function loadPlugins(entries, baseDir) {
 function authedGet(name, baseUrl, headers, used) {
   const base = String(baseUrl || '').replace(/\/$/, '');
   return async (p) => {
-    used.add(name);
     const absolute = /^https?:\/\//i.test(p);
     if (absolute && !p.startsWith(base + '/')) throw new Error(`ctx.api.${name}.get only accepts paths or URLs on ${base}`);
+    used.add(name);
     return (await request(absolute ? p : base + p, { headers, platform: name })).data;
   };
 }
@@ -138,7 +138,11 @@ function createContext({ cfg, secrets, store, options, sources, previous = null 
     secrets,
     secret: (ref) => store.resolveRef(ref),
     // Without opts.platform, the plugin's `platform` option picks the proxy.
-    request: (url, opts = {}) => request(url, { ...opts, platform: opts.platform || options.platform || 'default' }),
+    request: (url, opts = {}) => {
+      const platform = opts.platform || options.platform || 'default';
+      if (platform !== 'default') used.add(platform);
+      return request(url, { ...opts, platform });
+    },
     nextLink,
     api: {
       github: { get: authedGet('github', cfg.github.apiUrl, githubHeaders(secrets.github), used) },

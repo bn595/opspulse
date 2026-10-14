@@ -1,12 +1,13 @@
 'use strict';
 // GitHub Advanced Security alert dismissals, per organization or enterprise-wide.
 //
-// Each (scope, tool) pair is a stream listed newest-updated first. A full sync reads every stream
-// back to the start of the window; later refreshes read only what changed since the stream's last
-// sync and merge it in. GitHub stops listing an alert as dismissed once it is reopened, which an
-// incremental read cannot see, so a full resync runs every `fullResyncHours` and whenever the
-// configuration changes or a read hits the page cap. Sync state lives in `_sync`, which the server
-// keeps in its cache but does not send to the browser.
+// Each (scope, tool) pair is a stream listed newest-updated first. A stream without a sync record
+// reads back to the start of the window and replaces its previous alerts; otherwise it reads only
+// what changed since its last sync and merges that in. GitHub stops listing an alert as dismissed
+// once it is reopened, which an incremental read cannot see, so every stream is re-read in full
+// every `fullResyncHours` and whenever the configuration changes or a read hits the page cap. A
+// stream that fails keeps its previous alerts and is re-read in full once it succeeds. Sync state
+// lives in `_sync`, which the server keeps in its cache but does not send to the browser.
 
 const { nextLink, RateLimitError } = require('../http');
 const { gh } = require('./actions');
@@ -119,7 +120,7 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
     const since = synced ? Math.max(windowStart, synced - OVERLAP_MS) : windowStart;
     const path = `/${s.scope}/${s.tool}/alerts?${TOOLS[s.tool].query(dc)}&sort=updated&direction=desc&per_page=100`;
     try {
-      return { ...s, ok: true, syncedAt: now, ...(await readStream(api, path, s.tool, since, keep, dc.maxPagesPerTool)) };
+      return { ...s, ok: true, full: !synced, syncedAt: now, ...(await readStream(api, path, s.tool, since, keep, dc.maxPagesPerTool)) };
     } catch (e) {
       RateLimitError.rethrow(e);
       return { ...s, ok: false, error: e.message };
@@ -127,18 +128,15 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
   });
   if (results.every((r) => !r.ok)) throw new Error(results[0].error);
 
-  // Merge by alert URL: newer reads replace older ones. Incremental reads start from everything
-  // previously known; a full resync starts empty except for streams that failed, which keep their
-  // previous items until they can be read again.
+  // Merge by alert URL: newer reads replace older ones. Previous items are kept unless their stream
+  // was just read in full. GitHub org names are case-insensitive; config may spell them differently.
   const merged = new Map();
   const hidden = new Map();
-  const sameConfig = prev && prev.fingerprint === fingerprint;
-  const failed = results.filter((r) => !r.ok);
-  // GitHub org names are case-insensitive; config may spell them differently from the API.
-  const fromFailedStream = (i) => failed.some((r) => r.tool === i.tool && (enterprise || r.scope.toLowerCase() === `orgs/${i.org}`.toLowerCase()));
-  if (sameConfig) {
-    for (const i of previous.orgs.flatMap((o) => o.items)) if (incremental || fromFailedStream(i)) merged.set(i.url, i);
-    for (const [id, h] of Object.entries(prev.hidden || {})) if (incremental || fromFailedStream(h)) hidden.set(id, h);
+  const streamOf = (x) => results.find((r) => r.tool === x.tool && (enterprise || r.scope.toLowerCase() === `orgs/${x.org}`.toLowerCase()));
+  const keepPrevious = (x) => { const r = streamOf(x); return !r || !r.ok || !r.full; };
+  if (prev && prev.fingerprint === fingerprint) {
+    for (const i of previous.orgs.flatMap((o) => o.items)) if (keepPrevious(i)) merged.set(i.url, i);
+    for (const [id, h] of Object.entries(prev.hidden || {})) if (keepPrevious(h)) hidden.set(id, h);
   }
   for (const r of results.filter((x) => x.ok)) {
     for (const i of r.items) { merged.set(i.url, i); hidden.delete(i.url); }
@@ -169,12 +167,10 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
   const streamsState = {};
   for (const r of results) streamsState[r.id] = r.ok ? { syncedAt: r.syncedAt } : (incremental ? prev.streams[r.id] : null) || {};
   const capped = results.some((r) => r.capped);
-  // When the last complete full sync happened. A capped read leaves a gap, and a stream that failed
-  // during a full sync still holds old items, so both force another full sync on the next refresh.
+  // When every stream was last re-read in full. A capped read leaves a gap, so force another.
   let fullAt = now;
   if (capped) fullAt = 0;
   else if (incremental) fullAt = prev.fullAt;
-  else if (failed.length) fullAt = 0;
   return {
     mode: enterprise ? 'enterprise' : 'orgs',
     enterprise: enterprise || null,

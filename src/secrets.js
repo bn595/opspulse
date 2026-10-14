@@ -88,7 +88,8 @@ class SecretStore {
       const v = this.resolveLocal(ref);
       values[key] = v;
       status[key] = v ? 'ok' : 'missing';
-      if (!v && this.required.has(key)) errors.push(`${key}: ${ref} is empty — ${ref.startsWith('env:') ? 'set it in .env' : ref.startsWith('file:') ? 'file missing or empty' : 'no value'}`);
+      // An empty env: proxy means a direct connection; a missing proxy file is a mistake.
+      if (!v && (this.required.has(key) || (key.startsWith('proxy.') && ref.startsWith('file:')))) errors.push(`${key}: ${ref} is empty — ${ref.startsWith('env:') ? 'set it in .env' : ref.startsWith('file:') ? 'file missing or empty' : 'no value'}`);
     }
     for (const k of Object.keys(this.refs)) if (k.startsWith('proxy.')) proxies[k.slice(6)] = values[k] || '';
     // Apply non-vault proxies first; they may be required to reach the vault.

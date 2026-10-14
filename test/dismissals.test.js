@@ -163,7 +163,7 @@ test('a configuration without alert types is reported clearly', async (t) => {
   await assert.rejects(dismissals.collect(cfgWith(gh.apiUrl, { orgs: ['acme'], tools: [] }), { github: 't' }, null, { now: T0 }), /github\.dismissals\.tools lists no supported alert types/);
 });
 
-test('after a full resync with a failed stream, the next refresh resyncs fully again', async (t) => {
+test('a stream that failed during a full resync is re-read in full once it succeeds', async (t) => {
   let alerts = { acme: [codeAlert(1, 'acme', T0, 1)], labs: [codeAlert(7, 'labs', T0, 2), codeAlert(8, 'labs', T0, 3)] };
   let failLabs = false;
   const gh = await fakeGitHub(t, (p) => {
@@ -190,3 +190,14 @@ test('an unknown alert type in tools is reported instead of skipped', async (t) 
   const gh = await fakeGitHub(t, () => []);
   await assert.rejects(dismissals.collect(cfgWith(gh.apiUrl, { orgs: ['acme'], tools: ['code-scanning', 'secret_scanning'] }), { github: 't' }, null, { now: T0 }), /github\.dismissals\.tools: unknown alert type "secret_scanning"/);
 });
+
+test('a stream that keeps failing does not make healthy streams re-read their whole window', async (t) => {
+  const many = Array.from({ length: 6 }, (_, i) => codeAlert(i + 1, 'acme', T0, i * 24));
+  const gh = await fakeGitHub(t, (p) => (p.startsWith('/orgs/labs/') ? 'fail' : p === '/orgs/acme/code-scanning/alerts' ? many : null));
+  const cfg = cfgWith(gh.apiUrl, { orgs: ['acme', 'labs'] });
+  const first = await dismissals.collect(cfg, { github: 't' }, null, { now: T0 });
+  gh.requests.length = 0;
+  await dismissals.collect(cfg, { github: 't' }, first, { now: T0 + H });
+  assert.deepEqual(gh.requests.filter((r) => r.startsWith('/orgs/acme/')).length, 1, 'acme reads one page incrementally');
+});
+

@@ -164,12 +164,15 @@ async function refresh(force = false) {
     await Promise.all(plugins.filter((p) => due.has(pluginKey(p.id))).map((p) => {
       const key = pluginKey(p.id);
       if (p.error) { lastAttempt[key] = Date.now(); setSource(key, newSource({ status: 'error', title: p.title, error: p.error })); return null; }
-      // The chip shows the budget of the `platform` option, else of the first platform the plugin called.
+      // The chip shows the budget of the `platform` option, else of the platform the plugin last called.
       let ctx = null;
-      const collect = (previous) => runPlugin(p, (ctx = createContext({ cfg, secrets, store, options: p.options, sources: builtins, previous })));
+      const collect = (previous) => {
+        ctx = createContext({ cfg, secrets, store, options: p.options, sources: builtins, previous });
+        return runPlugin(p, ctx);
+      };
+      const platformNow = () => p.options.platform || (ctx && platformsUsed(ctx)[0]) || sources[key].platform || null;
       return runSource(key, collect, { title: p.title, platform: p.options.platform || sources[key].platform || null }).then(() => {
-        const platform = p.options.platform || (ctx && platformsUsed(ctx)[0]) || null;
-        if (platform !== sources[key].platform) setSource(key, { ...sources[key], platform });
+        if (platformNow() !== sources[key].platform) setSource(key, { ...sources[key], platform: platformNow() });
       });
     }));
     lastRefreshAt = new Date().toISOString();

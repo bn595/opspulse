@@ -139,3 +139,9 @@ test('an empty proxy reference means a direct connection, not an error', async (
   const { errors } = await newStore(cfg).resolve();
   assert.deepEqual(errors.filter((e) => e.startsWith('proxy.')), []);
 });
+
+test('a proxy read from a missing file is reported rather than silently skipped', async () => {
+  const cfg = setup({ sonar: { token: 'literal-sonar' }, network: { proxies: { sonar: 'file:no-such-proxy.txt' } } });
+  const { errors } = await newStore(cfg).resolve();
+  assert.ok(errors.some((e) => /^proxy\.sonar: file:no-such-proxy\.txt is empty — file missing or empty$/.test(e)), errors.join(' | '));
+});

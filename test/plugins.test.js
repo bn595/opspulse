@@ -179,3 +179,17 @@ test('the platforms a plugin calls through ctx.api are recorded for its rate-lim
   await ctx.api.sonar.get('/api/x');
   assert.deepEqual(platformsUsed(ctx), ['sonar']);
 });
+
+test('calls through ctx.request count toward the platforms a plugin uses', async (t) => {
+  const api = await serve((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{}'); });
+  t.after(api.close);
+  const ctx = contextFor({});
+  await ctx.request(api.url, { platform: 'github' });
+  assert.deepEqual(platformsUsed(ctx), ['github']);
+});
+
+test('a call rejected for leaving the platform host is not counted', async () => {
+  const ctx = contextFor({ sonar: { url: 'https://sonarqube.us' } });
+  await assert.rejects(ctx.api.sonar.get('https://elsewhere.example/x'));
+  assert.deepEqual(platformsUsed(ctx), []);
+});
