@@ -115,18 +115,22 @@ function loadPlugins(entries, baseDir) {
 
 // GET with a platform's credentials. Absolute URLs must stay on the platform's host so
 // credentials are never sent elsewhere (pagination links are absolute).
-function authedGet(name, baseUrl, headers) {
+function authedGet(name, baseUrl, headers, used) {
   const base = String(baseUrl || '').replace(/\/$/, '');
   return async (p) => {
+    used.add(name);
     const absolute = /^https?:\/\//i.test(p);
     if (absolute && !p.startsWith(base + '/')) throw new Error(`ctx.api.${name}.get only accepts paths or URLs on ${base}`);
     return (await request(absolute ? p : base + p, { headers, platform: name })).data;
   };
 }
 
+const PLATFORMS_USED = new WeakMap(); // ctx -> Set of platforms called through ctx.api
+
 // What a plugin's collect(ctx) receives. Network calls go through the shared client, so proxies apply.
 function createContext({ cfg, secrets, store, options, sources, previous = null }) {
-  return {
+  const used = new Set();
+  const ctx = {
     options,
     sources,
     previous, // this plugin's last successful result, for incremental fetching
@@ -137,14 +141,17 @@ function createContext({ cfg, secrets, store, options, sources, previous = null 
     request: (url, opts = {}) => request(url, { ...opts, platform: opts.platform || options.platform || 'default' }),
     nextLink,
     api: {
-      github: { get: authedGet('github', cfg.github.apiUrl, githubHeaders(secrets.github)) },
-      sonar: { get: authedGet('sonar', cfg.sonar.url, { Authorization: `Bearer ${secrets.sonar}` }) },
-      jira: { get: authedGet('jira', cfg.jira.baseUrl, jiraHeaders(cfg.jira, secrets)) },
+      github: { get: authedGet('github', cfg.github.apiUrl, githubHeaders(secrets.github), used) },
+      sonar: { get: authedGet('sonar', cfg.sonar.url, { Authorization: `Bearer ${secrets.sonar}` }, used) },
+      jira: { get: authedGet('jira', cfg.jira.baseUrl, jiraHeaders(cfg.jira, secrets), used) },
     },
   };
+  PLATFORMS_USED.set(ctx, used);
+  return ctx;
 }
+const platformsUsed = (ctx) => [...(PLATFORMS_USED.get(ctx) || [])];
 
 const pluginKey = (id) => `plugin:${id}`;
 const pluginIdOf = (key) => (key.startsWith('plugin:') ? key.slice(7) : null);
 
-module.exports = { runPlugin, loadPlugins, createContext, pluginKey, pluginIdOf };
+module.exports = { runPlugin, loadPlugins, createContext, platformsUsed, pluginKey, pluginIdOf };

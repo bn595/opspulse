@@ -14,15 +14,9 @@ const feed = require('./feed');
 const demo = require('./demo');
 const { SecretStore } = require('./secrets');
 const { createAcks } = require('./acks');
-const { loadPlugins, runPlugin, createContext, pluginKey, pluginIdOf } = require('./plugins');
+const { loadPlugins, runPlugin, createContext, platformsUsed, pluginKey, pluginIdOf } = require('./plugins');
 const { planRefresh } = require('./schedule');
 const { BUILTIN, publicSources } = require('./sources');
-const CONNECTORS = {
-  actions: require('./connectors/actions'),
-  dismissals: require('./connectors/dismissals'),
-  sonar: require('./connectors/sonar'),
-  jira: require('./connectors/jira'),
-};
 
 const ROOT = path.resolve(__dirname, '..');
 const PUBLIC = path.join(ROOT, 'public');
@@ -56,7 +50,7 @@ const newSource = (extra) => ({ status: 'pending', fetchedAt: null, error: null,
 let revision = 0; // bumps on every change the browser should re-fetch
 const lastAttempt = {};
 function setSource(key, value) { sources[key] = value; revision++; }
-for (const k of Object.keys(CONNECTORS)) sources[k] = newSource();
+for (const k of Object.keys(BUILTIN)) sources[k] = newSource();
 function applyNetwork(proxies) { net.configure({ ...cfg.network, proxies }); }
 
 function loadConfig() {
@@ -77,7 +71,8 @@ function loadConfig() {
 }
 loadConfig();
 
-const enabled = (key) => BUILTIN[key].section(cfg).enabled;
+const setting = (key, name) => BUILTIN[key].section(cfg)[name];
+const enabled = (key) => setting(key, 'enabled');
 
 const CACHE_FILE = path.join(cfg._dir, '.cache', DEMO ? 'demo.json' : 'snapshot.json');
 const acks = createAcks({ file: path.join(cfg._dir, '.cache', DEMO ? 'demo-acks.json' : 'acks.json') });
@@ -103,7 +98,7 @@ function saveCache() {
 // Minutes between refreshes per source. Plugins use their `refreshMinutes` option.
 function intervals() {
   const out = {};
-  for (const k of Object.keys(CONNECTORS)) if (enabled(k)) out[k] = BUILTIN[k].section(cfg).refreshMinutes ?? cfg.server.refreshMinutes;
+  for (const k of Object.keys(BUILTIN)) if (enabled(k)) out[k] = setting(k, 'refreshMinutes') ?? cfg.server.refreshMinutes;
   for (const p of plugins) out[pluginKey(p.id)] = p.options.refreshMinutes ?? cfg.server.refreshMinutes;
   return out;
 }
@@ -139,7 +134,7 @@ async function refresh(force = false) {
       if (m !== configMtime) { loadConfig(); revision++; console.log('  config changed, reloaded'); }
     } catch { /* config may not exist in demo mode */ }
 
-    for (const k of Object.keys(CONNECTORS)) if (!enabled(k) && sources[k].status !== 'disabled') setSource(k, newSource({ status: 'disabled' }));
+    for (const k of Object.keys(BUILTIN)) if (!enabled(k) && sources[k].status !== 'disabled') setSource(k, newSource({ status: 'disabled' }));
     const due = new Set(planRefresh({ intervals: intervals(), lastAttempt, blockedUntil: blockedUntil(), now: Date.now(), force }).due);
     if (!due.size) return;
 
@@ -154,22 +149,28 @@ async function refresh(force = false) {
 
     const demoData = DEMO ? demo.generate() : null;
     await Promise.all(
-      Object.entries(CONNECTORS).filter(([key]) => due.has(key)).map(([key, conn]) => {
+      Object.keys(BUILTIN).filter((key) => due.has(key)).map((key) => {
         if (!DEMO && store.status[BUILTIN[key].secret] === 'pending') {
           // Token is in Key Vault and no one has signed in; skip the API call and retry on the next tick.
           const waiting = 'Waiting for Key Vault sign-in';
           if (sources[key].error !== waiting) setSource(key, { ...sources[key], status: 'error', error: waiting, errorAt: new Date().toISOString() });
           return null;
         }
-        return runSource(key, (previous) => (DEMO ? demoData[key] : conn.collect(cfg, secrets, previous)));
+        return runSource(key, (previous) => (DEMO ? demoData[key] : BUILTIN[key].connector.collect(cfg, secrets, previous)));
       })
     );
     // Plugins run after the built-in connectors so ctx.sources holds current data.
-    const builtins = Object.fromEntries(Object.keys(CONNECTORS).map((k) => [k, sources[k].data || null]));
+    const builtins = Object.fromEntries(Object.keys(BUILTIN).map((k) => [k, sources[k].data || null]));
     await Promise.all(plugins.filter((p) => due.has(pluginKey(p.id))).map((p) => {
       const key = pluginKey(p.id);
       if (p.error) { lastAttempt[key] = Date.now(); setSource(key, newSource({ status: 'error', title: p.title, error: p.error })); return null; }
-      return runSource(key, (previous) => runPlugin(p, createContext({ cfg, secrets, store, options: p.options, sources: builtins, previous })), { title: p.title, platform: p.options.platform || null });
+      // The chip shows the budget of the `platform` option, else of the first platform the plugin called.
+      let ctx = null;
+      const collect = (previous) => runPlugin(p, (ctx = createContext({ cfg, secrets, store, options: p.options, sources: builtins, previous })));
+      return runSource(key, collect, { title: p.title, platform: p.options.platform || sources[key].platform || null }).then(() => {
+        const platform = p.options.platform || (ctx && platformsUsed(ctx)[0]) || null;
+        if (platform !== sources[key].platform) setSource(key, { ...sources[key], platform });
+      });
     }));
     lastRefreshAt = new Date().toISOString();
     saveCache();

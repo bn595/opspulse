@@ -76,7 +76,7 @@ async function readStream(api, path, tool, since, keep, maxPages) {
       if (Date.parse(a.updated_at) < since) { reachedSince = true; break; }
       const item = toItem(tool, a);
       if (!item.at || Date.parse(item.at) < since) continue;
-      if (keep && !keep({ ...item, raw: a })) hidden[item.url] = { at: item.at, org: item.org };
+      if (keep && !keep({ ...item, raw: a })) hidden[item.url] = { at: item.at, org: item.org, tool };
       else items.push(item);
     }
     if (reachedSince) return { items, hidden, capped: false };
@@ -102,7 +102,9 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
   const api = gh(cfg, secrets.github);
   const keep = rules.compile(dc, 'github.dismissals');
   const windowStart = now - dc.lookbackDays * 86400e3;
-  const tools = dc.tools.filter((t) => TOOLS[t]);
+  const unknown = dc.tools.filter((t) => !TOOLS[t]);
+  if (unknown.length) throw new Error(`github.dismissals.tools: unknown alert type "${unknown[0]}" (use ${Object.keys(TOOLS).join(', ')})`);
+  const tools = dc.tools;
   if (!tools.length) throw new Error(`github.dismissals.tools lists no supported alert types (use ${Object.keys(TOOLS).join(', ')})`);
   const scopes = enterprise ? [`enterprises/${enterprise}`] : dc.orgs.map((o) => `orgs/${o}`);
 
@@ -132,10 +134,11 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
   const hidden = new Map();
   const sameConfig = prev && prev.fingerprint === fingerprint;
   const failed = results.filter((r) => !r.ok);
-  const fromFailedStream = (i) => failed.some((r) => r.tool === i.tool && (enterprise || r.scope === `orgs/${i.org}`));
+  // GitHub org names are case-insensitive; config may spell them differently from the API.
+  const fromFailedStream = (i) => failed.some((r) => r.tool === i.tool && (enterprise || r.scope.toLowerCase() === `orgs/${i.org}`.toLowerCase()));
   if (sameConfig) {
     for (const i of previous.orgs.flatMap((o) => o.items)) if (incremental || fromFailedStream(i)) merged.set(i.url, i);
-    if (incremental) for (const [id, h] of Object.entries(prev.hidden || {})) hidden.set(id, h);
+    for (const [id, h] of Object.entries(prev.hidden || {})) if (incremental || fromFailedStream(h)) hidden.set(id, h);
   }
   for (const r of results.filter((x) => x.ok)) {
     for (const i of r.items) { merged.set(i.url, i); hidden.delete(i.url); }
@@ -145,8 +148,14 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
   for (const [id, h] of hidden) if (Date.parse(h.at) < windowStart) hidden.delete(id);
 
   // Group for the UI. In org mode every configured org appears, even with no dismissals.
-  const orgs = new Map((enterprise ? [] : dc.orgs).map((o) => [o, { org: o, items: [], errors: {}, truncated: [], hidden: 0 }]));
-  const orgOf = (name) => { if (!orgs.has(name)) orgs.set(name, { org: name, items: [], errors: {}, truncated: [], hidden: 0 }); return orgs.get(name); };
+  // Keyed case-insensitively; configured spellings are used for display.
+  const orgs = new Map();
+  const orgOf = (name) => {
+    const key = String(name).toLowerCase();
+    if (!orgs.has(key)) orgs.set(key, { org: name, items: [], errors: {}, truncated: [], hidden: 0 });
+    return orgs.get(key);
+  };
+  if (!enterprise) dc.orgs.forEach(orgOf);
   for (const i of items) orgOf(i.org).items.push(i);
   for (const h of hidden.values()) orgOf(h.org).hidden++;
   const errors = {};
@@ -160,10 +169,12 @@ async function collect(cfg, secrets, previous = null, { now = Date.now() } = {})
   const streamsState = {};
   for (const r of results) streamsState[r.id] = r.ok ? { syncedAt: r.syncedAt } : (incremental ? prev.streams[r.id] : null) || {};
   const capped = results.some((r) => r.capped);
-  // When the last full sync happened: a capped read leaves a gap, so force one on the next refresh.
+  // When the last complete full sync happened. A capped read leaves a gap, and a stream that failed
+  // during a full sync still holds old items, so both force another full sync on the next refresh.
   let fullAt = now;
   if (capped) fullAt = 0;
   else if (incremental) fullAt = prev.fullAt;
+  else if (failed.length) fullAt = 0;
   return {
     mode: enterprise ? 'enterprise' : 'orgs',
     enterprise: enterprise || null,

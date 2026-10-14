@@ -132,3 +132,10 @@ test('secrets of disabled sources are not required', async () => {
   assert.equal(values.sonar, 'literal-sonar');
   assert.deepEqual(errors, []);
 });
+
+test('an empty proxy reference means a direct connection, not an error', async (t) => {
+  delete process.env.OPSPULSE_TEST_UNSET_PROXY;
+  const cfg = setup({ sonar: { token: 'literal-sonar' }, network: { proxies: { sonar: 'env:OPSPULSE_TEST_UNSET_PROXY' } } });
+  const { errors } = await newStore(cfg).resolve();
+  assert.deepEqual(errors.filter((e) => e.startsWith('proxy.')), []);
+});

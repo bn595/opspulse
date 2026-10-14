@@ -7,7 +7,7 @@ const path = require('path');
 const http = require('http');
 const config = require('../src/config');
 const { SecretStore } = require('../src/secrets');
-const { runPlugin, loadPlugins, createContext } = require('../src/plugins');
+const { runPlugin, loadPlugins, createContext, platformsUsed } = require('../src/plugins');
 
 const plugin = (collect) => ({ id: 'access-report', title: 'Access report', collect });
 
@@ -170,4 +170,12 @@ test('ctx.previous holds the plugin result from the last refresh, for incrementa
   const last = { metrics: [{ label: 'Projects', value: 10 }] };
   assert.deepEqual(contextFor({}, { previous: last }).previous, last);
   assert.equal(contextFor({}).previous, null);
+});
+
+test('the platforms a plugin calls through ctx.api are recorded for its rate-limit budget', async (t) => {
+  const sonar = await serve((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{}'); });
+  t.after(sonar.close);
+  const ctx = contextFor({ sonar: { url: sonar.url } });
+  await ctx.api.sonar.get('/api/x');
+  assert.deepEqual(platformsUsed(ctx), ['sonar']);
 });

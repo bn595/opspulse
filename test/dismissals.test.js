@@ -158,7 +158,35 @@ test('a stream that fails during a full resync keeps its previous alerts', async
   assert.match(resync.orgs.find((o) => o.org === 'labs').errors['code-scanning'], /^404 /);
 });
 
-test('a configuration without supported alert types is reported clearly', async (t) => {
+test('a configuration without alert types is reported clearly', async (t) => {
   const gh = await fakeGitHub(t, () => []);
-  await assert.rejects(dismissals.collect(cfgWith(gh.apiUrl, { orgs: ['acme'], tools: ['nope'] }), { github: 't' }, null, { now: T0 }), /github\.dismissals\.tools lists no supported alert types/);
+  await assert.rejects(dismissals.collect(cfgWith(gh.apiUrl, { orgs: ['acme'], tools: [] }), { github: 't' }, null, { now: T0 }), /github\.dismissals\.tools lists no supported alert types/);
+});
+
+test('after a full resync with a failed stream, the next refresh resyncs fully again', async (t) => {
+  let alerts = { acme: [codeAlert(1, 'acme', T0, 1)], labs: [codeAlert(7, 'labs', T0, 2), codeAlert(8, 'labs', T0, 3)] };
+  let failLabs = false;
+  const gh = await fakeGitHub(t, (p) => {
+    const org = p.split('/')[2];
+    return org === 'labs' && failLabs ? 'fail' : alerts[org];
+  });
+  const cfg = cfgWith(gh.apiUrl, { orgs: ['acme', 'labs'], fullResyncHours: 24 });
+  const first = await dismissals.collect(cfg, { github: 't' }, null, { now: T0 });
+  failLabs = true;
+  const failedResync = await dismissals.collect(cfg, { github: 't' }, first, { now: T0 + 25 * H });
+  failLabs = false;
+  alerts = { ...alerts, labs: [codeAlert(7, 'labs', T0, 2)] }; // alert 8 was reopened meanwhile
+  const next = await dismissals.collect(cfg, { github: 't' }, failedResync, { now: T0 + 26 * H });
+  assert.deepEqual(byOrg(next), { acme: ['SQL injection#1'], labs: ['SQL injection#7'] });
+});
+
+test('organization names match regardless of case', async (t) => {
+  const gh = await fakeGitHub(t, (p) => (p === '/orgs/Acme/code-scanning/alerts' ? [codeAlert(1, 'acme', T0, 1)] : null));
+  const data = await dismissals.collect(cfgWith(gh.apiUrl, { orgs: ['Acme'] }), { github: 't' }, null, { now: T0 });
+  assert.deepEqual(byOrg(data), { Acme: ['SQL injection#1'] });
+});
+
+test('an unknown alert type in tools is reported instead of skipped', async (t) => {
+  const gh = await fakeGitHub(t, () => []);
+  await assert.rejects(dismissals.collect(cfgWith(gh.apiUrl, { orgs: ['acme'], tools: ['code-scanning', 'secret_scanning'] }), { github: 't' }, null, { now: T0 }), /github\.dismissals\.tools: unknown alert type "secret_scanning"/);
 });

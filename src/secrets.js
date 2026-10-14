@@ -37,7 +37,7 @@ class SecretStore {
   // Secrets of enabled sources, and any configured proxy.
   needed(key) { return this.required.has(key) || key.startsWith('proxy.'); }
 
-  // Key Vault is needed for needed secrets, and is available to plugins via ctx.secret().
+  // Key Vault is used when an enabled source or a proxy refers to it, and by plugins via ctx.secret().
   usesVault() {
     return Object.entries(this.refs).some(([k, r]) => KV.test(r || '') && this.needed(k)) || (this.hasPlugins && !!this.kv.vaultUrl);
   }
@@ -88,7 +88,7 @@ class SecretStore {
       const v = this.resolveLocal(ref);
       values[key] = v;
       status[key] = v ? 'ok' : 'missing';
-      if (!v && this.needed(key)) errors.push(`${key}: ${ref} is empty — ${ref.startsWith('env:') ? 'set it in .env' : ref.startsWith('file:') ? 'file missing or empty' : 'no value'}`);
+      if (!v && this.required.has(key)) errors.push(`${key}: ${ref} is empty — ${ref.startsWith('env:') ? 'set it in .env' : ref.startsWith('file:') ? 'file missing or empty' : 'no value'}`);
     }
     for (const k of Object.keys(this.refs)) if (k.startsWith('proxy.')) proxies[k.slice(6)] = values[k] || '';
     // Apply non-vault proxies first; they may be required to reach the vault.

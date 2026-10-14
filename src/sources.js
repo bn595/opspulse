@@ -1,12 +1,12 @@
 'use strict';
-// The built-in sources: which platform each calls (for proxies and rate-limit budgets), which
-// secret it needs, and its configuration section (enabled, refreshMinutes, ...).
+// The built-in sources: the connector that collects each, the platform it calls (for proxies and
+// rate-limit budgets), the secret it needs, and its configuration section (enabled, refreshMinutes, ...).
 
 const BUILTIN = {
-  actions: { platform: 'github', secret: 'github', section: (cfg) => cfg.github.actions },
-  dismissals: { platform: 'github', secret: 'github', section: (cfg) => cfg.github.dismissals },
-  sonar: { platform: 'sonar', secret: 'sonar', section: (cfg) => cfg.sonar },
-  jira: { platform: 'jira', secret: 'jira', section: (cfg) => cfg.jira },
+  actions: { connector: require('./connectors/actions'), platform: 'github', secret: 'github', section: (cfg) => cfg.github.actions },
+  dismissals: { connector: require('./connectors/dismissals'), platform: 'github', secret: 'github', section: (cfg) => cfg.github.dismissals },
+  sonar: { connector: require('./connectors/sonar'), platform: 'sonar', secret: 'sonar', section: (cfg) => cfg.sonar },
+  jira: { connector: require('./connectors/jira'), platform: 'jira', secret: 'jira', section: (cfg) => cfg.jira },
 };
 
 // Sources as sent to the browser: connector sync state (`_sync`) stays on the server, and each

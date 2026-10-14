@@ -8,12 +8,7 @@ const path = require('path');
 const config = require('../src/config');
 const net = require('../src/http');
 const { SecretStore } = require('../src/secrets');
-const CONNECTORS = {
-  actions: require('../src/connectors/actions'),
-  dismissals: require('../src/connectors/dismissals'),
-  sonar: require('../src/connectors/sonar'),
-  jira: require('../src/connectors/jira'),
-};
+const { BUILTIN } = require('../src/sources');
 
 const i = process.argv.indexOf('--config');
 const file = path.resolve(i > 0 ? process.argv[i + 1] : process.env.OPSPULSE_CONFIG || path.join(__dirname, '..', 'config.json'));
@@ -51,12 +46,11 @@ const summarize = {
   for (const e of r.errors) { bad++; console.log(`  ! ${e}`); }
   console.log('');
 
-  const enabled = { actions: cfg.github.actions.enabled, dismissals: cfg.github.dismissals.enabled, sonar: cfg.sonar.enabled, jira: cfg.jira.enabled };
-  for (const [k, c] of Object.entries(CONNECTORS)) {
-    if (!enabled[k]) { console.log(`- ${k}: disabled`); continue; }
+  for (const [k, source] of Object.entries(BUILTIN)) {
+    if (!source.section(cfg).enabled) { console.log(`- ${k}: disabled`); continue; }
     const t0 = Date.now();
     try {
-      const d = await c.collect(cfg, r.values);
+      const d = await source.connector.collect(cfg, r.values);
       console.log(`✓ ${k} (${Date.now() - t0}ms)`);
       for (const line of summarize[k](d)) console.log(`    ${line}`);
     } catch (e) {
