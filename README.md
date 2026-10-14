@@ -37,7 +37,7 @@ npm run demo        # try it with synthetic data, no tokens needed
    ```
    On Windows you can also double-click `start.cmd`. On macOS or Linux, run `./start.sh`. A browser tab opens at `http://localhost:4777`.
 
-Data refreshes in the background every `server.refreshMinutes` (default 10). **Refresh** in the top bar forces a refresh. The last good data is cached in `.cache/` so a restart shows something immediately. If a source fails, its last data stays visible with a warning, and the failure goes into the feed.
+Each source refreshes in the background on its own interval (Actions and Jira every 10 minutes, GHAS and Sonar every 60 by default). **Refresh** in the top bar refreshes everything now, except sources paused by a rate limit. The last good data is cached in `.cache/` so a restart shows something immediately. If a source fails, its last data stays visible with a warning, and the failure goes into the feed.
 
 Edits to `config.json` are picked up on the next refresh without a restart.
 
@@ -155,7 +155,7 @@ Only needed if you're not using Key Vault for a given value. Any `token` / `emai
 
 | Token | Needs |
 |---|---|
-| **GitHub** | **Classic PAT:** `repo`, `security_events`, `read:org`. The account must be an org owner or in the **security manager** role to read org-level alerts. If your org enforces SSO, **authorize the token for SSO**. **Fine-grained PAT:** owner = the org; repository permissions *Actions: read*, *Code scanning alerts: read*, *Secret scanning alerts: read*, *Dependabot alerts: read*, *Metadata: read* on all repos you want counted. |
+| **GitHub** | **Classic PAT:** `repo`, `security_events`, `read:org`. The account must be an org owner or in the **security manager** role to read org-level alerts. GHAS enterprise mode (`github.dismissals.enterprise`) requires a classic PAT from an enterprise member. If your org enforces SSO, **authorize the token for SSO**. **Fine-grained PAT:** owner = the org; repository permissions *Actions: read*, *Code scanning alerts: read*, *Secret scanning alerts: read*, *Dependabot alerts: read*, *Metadata: read* on all repos you want counted. |
 | **SonarQube Cloud** | A user token from *My Account → Security* for an account with **Administer** on each organization. Project search needs admin rights. Without them those numbers show `n/a`. |
 | **Jira Cloud** | Your Atlassian email (`jira.email`) and an API token from <https://id.atlassian.com/manage-profile/security/api-tokens>. The account must be able to browse the projects in your JQL. |
 | **Jira Data Center / Server** | Set `"deployment": "datacenter"` and use a Personal Access Token. `email` is not needed. |
@@ -176,7 +176,7 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 | `port` | `4777` | If the port is taken, the next free one (up to +10) is used |
 | `host` | `127.0.0.1` | Keep on loopback; the dashboard has no authentication. |
 | `openBrowser` | `true` | |
-| `refreshMinutes` | `10` | Background refresh interval |
+| `refreshMinutes` | `10` | Default interval for plugins without their own `refreshMinutes`. Built-in sources have their own setting. |
 
 ### `network`
 | key | default | |
@@ -184,6 +184,7 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 | `proxies.github` / `.sonar` / `.jira` / `.azure` | `""` | Proxy URL per platform, empty = direct. Accepts `env:` / `file:` / `keyvault:` refs (not `keyvault:` for `azure`). |
 | `caFile` | `""` | Extra PEM CA bundle, relative to the config file |
 | `timeoutSeconds` | `30` | Per request |
+| `timeouts` | `{}` | Per-platform overrides in seconds, e.g. `{ "sonar": 90 }` |
 
 ### `secrets.azureKeyVault`
 | key | default | |
@@ -200,6 +201,7 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 | key | default | |
 |---|---|---|
 | `enabled` | `true` | |
+| `refreshMinutes` | `10` | |
 | `repos` | `[]` | `"org/repo"` or `{ repo, label, workflows, branch, expectEveryHours, includeDynamic }` |
 | `repos[].workflows` | all | Names, file names (`sync.yml`), paths or IDs. `["*"]` = all. |
 | `repos[].branch` | any | Only count runs on this branch |
@@ -213,17 +215,22 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 ### `github.dismissals`
 | key | default | |
 |---|---|---|
-| `orgs` | `[]` | Orgs to count |
+| `refreshMinutes` | `60` | |
+| `enterprise` | `""` | Enterprise slug. Uses the enterprise-wide alert endpoints instead of `orgs`. Classic token required. See [Running at scale](#running-at-scale). |
+| `orgs` | `[]` | Orgs to count when `enterprise` is not set |
 | `lookbackDays` | `30` | 7 / 14 / 30 / 90 window picker, capped at this |
 | `tools` | all three | Any of `code-scanning`, `secret-scanning`, `dependabot` |
-| `secretResolutions` | everything except `revoked` | Which secret-scanning resolutions count as a "dismissal" |
+| `secretResolutions` | everything except `revoked` | Which secret-scanning resolutions count as a "dismissal". Sent to GitHub as a filter. |
+| `dependabotStates` | `["dismissed"]` | Add `"auto_dismissed"` to include alerts Dependabot dismissed itself |
+| `fullResyncHours` | `24` | Hours between full re-reads; refreshes in between fetch only changes |
 | `feed` | `false` | Set to `true` to post an info item when an org has ≥ `feedWarnCount` dismissals in the window |
-| `maxPagesPerTool` | `20` | 100 alerts per page. The UI warns if the cap is hit. |
+| `maxPagesPerTool` | `20` | Pages of 100 per stream and refresh. If hit, the UI warns and the next refresh does a full sync. |
 
 ### `sonar`
 | key | default | |
 |---|---|---|
 | `url` | `https://sonarqube.us` | EU region: `https://sonarcloud.io` |
+| `refreshMinutes` | `60` | |
 | `organizations` | all orgs you're a member of | |
 | `staleDays` | `30` | "Not analyzed in N days" |
 | `tokenExpiryWarnDays` | `14` | Feed warns when any token on this account expires within N days |
@@ -232,6 +239,7 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 | key | default | |
 |---|---|---|
 | `deployment` | `cloud` | `cloud` or `datacenter` |
+| `refreshMinutes` | `10` | |
 | `baseUrl` | – | `https://your-company.atlassian.net` |
 | `jql` | – | Your backlog query. To also get resolved-in-period numbers, include recently closed tickets, e.g. `project = X AND (statusCategory != Done OR resolved >= -30d)` |
 | `lookbackDays` | `30` | Created-per-day chart and resolved count |
@@ -359,10 +367,34 @@ module.exports = {
 | `ctx.secret(ref)` | Resolves any reference (`keyvault:name`, `env:VAR`, `file:path`), so a plugin can use its own secrets. |
 | `ctx.sources` | What the built-in panels fetched in this refresh: `actions`, `dismissals`, `sonar`, `jira` (or `null`). Join across them without extra API calls. |
 | `ctx.options`, `ctx.config` | The plugin's own config entry, and the full configuration. |
+| `ctx.previous` | This plugin's last successful result (or `null`), for fetching only what changed. |
 
-**Behaviour.** Plugins run after the built-in connectors on every refresh. Invalid output is rejected with a message naming the field. A plugin that throws, fails to load or exceeds two minutes shows an error in its own panel and the feed, and nothing else is affected. Edits to a plugin file are picked up when `config.json` changes or the tool restarts.
+**Behaviour.** Plugins run after the built-in connectors, every `refreshMinutes` from their config entry (default `server.refreshMinutes`). Invalid output is rejected with a message naming the field. A plugin that throws, fails to load or exceeds two minutes shows an error in its own panel and the feed, and nothing else is affected. Edits to a plugin file are picked up when `config.json` changes or the tool restarts.
 
 Plugins are ordinary Node modules running with the same access as opspulse itself, including your tokens, so only load code you trust. [`plugins/examples/runs-by-actor.js`](plugins/examples/runs-by-actor.js) is a complete example that needs no API calls; `npm run demo` shows it.
+
+## Running at scale
+
+opspulse is built for large enterprises (tens of thousands of repositories, many organizations). What it costs per refresh:
+
+| Source | Cost | Grows with |
+|---|---|---|
+| Actions | 1 request per configured repo, plus run pages | Only the repos you list |
+| GHAS dismissals | After the first sync, about 1 request per stream (alert type × org, or alert type in enterprise mode) | Dismissals since the last refresh |
+| SonarQube Cloud | About 4 requests per organization (counts come from result totals) | Number of Sonar organizations |
+| Jira | Pages of 100 issues | Your JQL |
+
+**Recommendations**
+
+- **Use enterprise mode for GHAS** when you are an enterprise member who owns or is security manager of the organizations: set `github.dismissals.enterprise` to the enterprise slug. Three streams cover every organization, including ones added during a migration. It needs a **classic** token; GitHub's enterprise alert endpoints don't accept fine-grained tokens.
+- **Keep intervals proportional to how fast data changes.** Defaults: Actions and Jira every 10 minutes, GHAS and Sonar every 60. Each source has its own `refreshMinutes`.
+- **Exclude automated noise with rules** (for example `{ "by": "*[bot]" }`) so it never reaches counts, the feed or the browser.
+
+**How rate limits are handled.** Each platform's budget is tracked from its rate-limit headers (GitHub reports 5,000 requests per hour for a personal token). Requests stop before a budget runs out. A rate-limited platform is paused (honouring `Retry-After`, otherwise backing off 2 → 4 → 8 → 16 → 30 minutes; SonarQube Cloud does not publish its limits and asks clients to wait minutes). While paused, the source keeps its last data, its chip shows when it resumes, the feed shows a warning, and no requests are sent. Source chips show the remaining GitHub budget.
+
+**How GHAS stays cheap.** The first sync reads each stream back to the start of the window. Later refreshes read only what changed since the last one and merge it. Because GitHub stops listing an alert as dismissed once it is reopened, and an incremental read can't see that, a full resync runs every `fullResyncHours` (default 24) and whenever the configuration changes. Until then a reopened alert can still be shown as dismissed.
+
+**The browser** polls a small status endpoint and downloads data only when something changed.
 
 ## How the feed decides what's important
 
@@ -380,11 +412,12 @@ All rules live in [`src/feed.js`](src/feed.js) and are plain functions of the fe
 
 ```
 src/
-  server.js           HTTP server (loopback only), scheduler, cache, sign-in routes
+  server.js           HTTP server (loopback only), refresh loop, cache, sign-in routes
+  schedule.js         which sources are due to refresh
   config.js           config (JSON with comments) + .env loading
   secrets.js          resolves keyvault:/env:/file: refs; holds secrets in memory only
   azure.js            Entra sign-in (CLI, browser PKCE, device code) + Key Vault REST
-  http.js             node:http client: per-platform proxies, extra CA, retries, readable errors
+  http.js             node:http client: per-platform proxies, timeouts and rate limits, retries, readable errors
   feed.js             attention rules
   rules.js            include/exclude rules for connector data
   acks.js             acknowledged and snoozed feed items
@@ -430,7 +463,7 @@ API usage follows the vendors' public documentation. Run `npm run check` in each
 - **Sonar token expiry** relies on `expirationDate` from `api/user_tokens/search`. If your instance doesn't return it, the expiry column shows "no expiry" and no warning is raised.
 - **Sonar "failing quality gate"** uses `api/components/search_projects` with `filter=alert_status = ERROR`. If that's refused, the tile shows `n/a` with the error on hover. Nothing else is affected.
 - **Jira Cloud** uses the enhanced search endpoint (`/rest/api/3/search/jql`). It doesn't return a total, so counts are of fetched issues (capped by `maxIssues`, flagged in the UI if hit).
-- **GHAS** pages are sorted by `updated` and stop at the window edge. Very large orgs may need a higher `maxPagesPerTool`.
+- **GHAS** alerts reopened after dismissal stay listed until the next full resync (`fullResyncHours`).
 - **Entra sign-in** may be restricted by tenant policy. In that case the error page after sign-in shows an `AADSTS…` code identifying the cause.
 
 ## Optional: one-file executable

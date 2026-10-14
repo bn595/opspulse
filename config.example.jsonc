@@ -31,7 +31,8 @@
     },
     // Additional PEM CA bundle, e.g. for TLS-inspecting proxies. NODE_EXTRA_CA_CERTS also works.
     "caFile": "",
-    "timeoutSeconds": 30
+    "timeoutSeconds": 30,
+    "timeouts": { "sonar": 90 }             // per-platform overrides in seconds
   },
 
   // ---------------------------------------------------------------------------
@@ -82,9 +83,14 @@
     },
 
     "dismissals": {
+      // At enterprise scale, set the enterprise slug instead of listing orgs (classic token).
+      // "enterprise": "your-enterprise",
       "orgs": ["your-org"],
       "lookbackDays": 30,
       "tools": ["code-scanning", "secret-scanning", "dependabot"],
+      "dependabotStates": ["dismissed"],   // add "auto_dismissed" for alerts Dependabot dismissed itself
+      "fullResyncHours": 24,
+      "refreshMinutes": 60,
       "feed": false,
       // Optional include/exclude rules (also available under github.actions and jira).
       // Fields: tool, org, repo, by, reason, title, severity, comment, secretType, validity,
