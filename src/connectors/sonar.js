@@ -2,7 +2,7 @@
 // SonarQube Cloud token health and per-organization project counts.
 // Sub-calls fail individually; a missing permission shows "n/a" for that value only.
 
-const { request } = require('../http');
+const { request, RateLimitError } = require('../http');
 
 async function collect(cfg, secrets) {
   const sc = cfg.sonar;
@@ -11,7 +11,8 @@ async function collect(cfg, secrets) {
   const headers = { Authorization: `Bearer ${secrets.sonar}` };
   const get = (p) => request(base + p, { headers, platform: 'sonar' }).then((r) => r.data);
   const total = (p) => get(p).then((d) => d?.paging?.total ?? d?.total ?? null);
-  const soft = (p) => p.then((v) => ({ v }), (e) => ({ err: e.message }));
+  // A count that fails shows n/a; a rate limit fails the whole source so it is retried later.
+  const soft = (p) => p.then((v) => ({ v }), (e) => { if (e instanceof RateLimitError) throw e; return { err: e.message }; });
 
   const valid = await get('/api/authentication/validate');
   if (!valid?.valid) throw new Error('SonarQube Cloud says the token is not valid');

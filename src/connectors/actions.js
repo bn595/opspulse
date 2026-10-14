@@ -1,7 +1,7 @@
 'use strict';
 // GitHub Actions workflow runs for the configured repositories.
 
-const { request, nextLink } = require('../http');
+const { request, nextLink, RateLimitError } = require('../http');
 const rules = require('../rules');
 
 const githubHeaders = (token) => ({ Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' });
@@ -104,6 +104,7 @@ async function collect(cfg, secrets) {
       try {
         return await fetchRepo(api, entry, ac, filters[i]);
       } catch (e) {
+        if (e instanceof RateLimitError) throw e;
         return { repo: entry.repo, label: entry.label || entry.repo, error: e.message, workflows: [] };
       }
     })

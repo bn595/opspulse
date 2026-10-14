@@ -17,6 +17,7 @@ const DEFAULTS = {
     proxies: { github: '', sonar: '', jira: '', azure: '' },
     caFile: '', // additional PEM CA bundle
     timeoutSeconds: 30,
+    timeouts: {}, // per-platform overrides in seconds, e.g. { "sonar": 90 }
   },
   secrets: {
     azureKeyVault: {
@@ -84,6 +85,18 @@ const DEFAULTS = {
 };
 
 // Secret references resolved by secrets.js, keyed by internal name.
+// Secrets that enabled built-in sources need; only these are reported when missing.
+function requiredSecrets(cfg) {
+  const req = new Set();
+  if (cfg.github.actions.enabled || cfg.github.dismissals.enabled) req.add('github');
+  if (cfg.sonar.enabled) req.add('sonar');
+  if (cfg.jira.enabled) {
+    req.add('jira');
+    if (cfg.jira.deployment !== 'datacenter') req.add('jiraEmail');
+  }
+  return req;
+}
+
 function secretRefs(cfg) {
   return {
     github: cfg.github.token,
@@ -178,4 +191,4 @@ function publicView(cfg, secretStatus) {
   };
 }
 
-module.exports = { load, publicView, secretRefs, stripJsonComments };
+module.exports = { load, publicView, secretRefs, requiredSecrets, stripJsonComments };

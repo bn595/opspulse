@@ -193,6 +193,7 @@ function snapshot() {
     lastRefreshAt,
     nextRefreshAt,
     revision,
+    limits: net.rateLimitStatus(),
     refreshing: !!refreshing,
     config: config.publicView(cfg, auth),
     auth,

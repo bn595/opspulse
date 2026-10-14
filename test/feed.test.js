@@ -89,3 +89,10 @@ test('plugin feed items and plugin failures appear under the plugin title', () =
     ['warn', 'access-report', '3 requests waiting'],
   ]);
 });
+
+test('a rate-limited source is a warning that says when it resumes', () => {
+  const sources = { sonar: { status: 'rate-limited', error: 'rate limited by sonarqube.us; next attempt at 12:30 UTC', retryAt: '2026-10-13T12:30:00.000Z' } };
+  assert.deepEqual(feed.build(sources, cfg, NOW).map((i) => [i.level, i.title, i.detail]), [
+    ['warn', 'SonarQube Cloud paused by rate limiting', 'rate limited by sonarqube.us; next attempt at 12:30 UTC'],
+  ]);
+});

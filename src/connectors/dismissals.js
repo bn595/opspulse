@@ -1,7 +1,7 @@
 'use strict';
 // GitHub Advanced Security alert dismissals per organization.
 
-const { nextLink } = require('../http');
+const { nextLink, RateLimitError } = require('../http');
 const { gh } = require('./actions');
 const rules = require('../rules');
 
@@ -97,6 +97,7 @@ async function collect(cfg, secrets) {
             result.items.push(...r.items);
             if (r.truncated) result.truncated.push(tool);
           } catch (e) {
+            if (e instanceof RateLimitError) throw e;
             result.errors[tool] = e.message;
           }
         })

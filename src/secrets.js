@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const { cliToken, EntraClient, getSecret } = require('./azure');
-const { secretRefs } = require('./config');
+const { secretRefs, requiredSecrets } = require('./config');
 
 const KV = /^keyvault:/;
 
@@ -24,6 +24,8 @@ class SecretStore {
 
   reconfigure(cfg) {
     this.refs = secretRefs(cfg);
+    this.required = requiredSecrets(cfg);
+    this.hasPlugins = (cfg.plugins || []).some((p) => p && p.enabled !== false);
     this.kv = cfg.secrets.azureKeyVault;
     this.dir = cfg._dir;
     this.clearCache();
@@ -32,7 +34,10 @@ class SecretStore {
     this.entra = this.kv.tenantId && this.kv.clientId ? new EntraClient(this.kv) : null;
   }
 
-  usesVault() { return Object.values(this.refs).some((r) => KV.test(r || '')); }
+  // Key Vault is needed for required secrets, and is available to plugins via ctx.secret().
+  usesVault() {
+    return Object.entries(this.refs).some(([k, r]) => KV.test(r || '') && (this.required.has(k) || k.startsWith('proxy.'))) || (this.hasPlugins && !!this.kv.vaultUrl);
+  }
 
   clearCache() {
     this.cache = { values: {}, at: 0 };
@@ -71,11 +76,16 @@ class SecretStore {
 
     for (const [key, ref] of Object.entries(this.refs)) {
       if (!ref) { status[key] = 'unset'; values[key] = ''; continue; }
-      if (KV.test(ref)) { kvNames[key] = ref.slice(9).trim(); continue; }
+      if (KV.test(ref)) {
+        // Vault secrets of disabled sources are not fetched; plugins can still use ctx.secret().
+        if (this.required.has(key) || key.startsWith('proxy.')) kvNames[key] = ref.slice(9).trim();
+        else { status[key] = 'unset'; values[key] = ''; }
+        continue;
+      }
       const v = this.resolveLocal(ref);
       values[key] = v;
       status[key] = v ? 'ok' : 'missing';
-      if (!v && !key.startsWith('proxy.')) errors.push(`${key}: ${ref} is empty — ${ref.startsWith('env:') ? 'set it in .env' : ref.startsWith('file:') ? 'file missing or empty' : 'no value'}`);
+      if (!v && this.required.has(key)) errors.push(`${key}: ${ref} is empty — ${ref.startsWith('env:') ? 'set it in .env' : ref.startsWith('file:') ? 'file missing or empty' : 'no value'}`);
     }
     for (const k of Object.keys(this.refs)) if (k.startsWith('proxy.')) proxies[k.slice(6)] = values[k] || '';
     // Apply non-vault proxies first; they may be required to reach the vault.
@@ -108,7 +118,7 @@ class SecretStore {
             } catch (e) {
               values[k] = '';
               status[k] = 'error';
-              errors.push(e.message);
+              if (this.required.has(k) || k.startsWith('proxy.')) errors.push(e.message);
               if (e.status === 401) { this.azure.accessToken = null; this.azure.expiresAt = 0; }
             }
           }));

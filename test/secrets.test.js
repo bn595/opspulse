@@ -125,3 +125,10 @@ test('sign-out forgets the session', async (t) => {
   assert.equal(values.jira, '');
   assert.equal(store.authStatus().needsLogin, true);
 });
+
+test('secrets of disabled sources are not required', async () => {
+  const cfg = setup({ github: { actions: { enabled: false }, dismissals: { enabled: false } }, jira: { enabled: false }, sonar: { token: 'literal-sonar' } });
+  const { values, errors } = await newStore(cfg).resolve();
+  assert.equal(values.sonar, 'literal-sonar');
+  assert.deepEqual(errors, []);
+});

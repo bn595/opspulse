@@ -132,7 +132,9 @@ function build(sources, cfg, now = Date.now(), extra = []) {
     const label = pluginId ? src.title || pluginId : LABEL[key];
     const source = pluginId || (key === 'dismissals' ? 'ghas' : key);
     // A pending Key Vault sign-in is reported once by the secrets item.
-    if (src.error && !/waiting for key vault sign-in/i.test(src.error)) {
+    if (src.status === 'rate-limited') {
+      items.push({ id: `src-${key}`, level: 'warn', source, title: `${label} paused by rate limiting`, detail: src.error });
+    } else if (src.error && !/waiting for key vault sign-in/i.test(src.error)) {
       items.push({ id: `src-${key}`, level: 'critical', source, title: `${label} refresh failed`, detail: src.error });
     }
     if (src.data) {

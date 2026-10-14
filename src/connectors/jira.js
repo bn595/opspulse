@@ -2,7 +2,7 @@
 // Jira issues for one JQL query. Cloud uses /rest/api/3/search/jql (token pagination);
 // Data Center uses /rest/api/2/search with a bearer PAT.
 
-const { request } = require('../http');
+const { request, RateLimitError } = require('../http');
 const rules = require('../rules');
 
 const FIELDS = ['summary', 'status', 'assignee', 'reporter', 'priority', 'issuetype', 'created', 'updated', 'statuscategorychangedate', 'resolutiondate', 'labels'];
@@ -51,6 +51,7 @@ async function collect(cfg, secrets) {
   try {
     await request(`${base}/rest/api/${cloud ? 3 : 2}/myself`, { headers, retries: 0, platform: 'jira' });
   } catch (e) {
+    if (e instanceof RateLimitError) throw e;
     throw new Error(e.status === 401 || e.status === 403 || e.status === 404 ? `Jira rejected the credentials (${e.status}) — check jira.email / jira.token` : e.message);
   }
 

@@ -320,13 +320,17 @@ document.addEventListener('input', (e) => {
 addEventListener('hashchange', () => { readHash(); renderAll(); });
 
 /* ---------- shell ---------- */
+const SOURCE_PLATFORM = { actions: 'github', dismissals: 'github', sonar: 'sonar', jira: 'jira' };
 function sourceState(key) {
   const s = snap.sources[key];
   if (!s || s.status === 'disabled') return null;
   if (s.status === 'refreshing' || s.status === 'pending') return { cls: 'busy', text: 'refreshing…' };
+  if (s.status === 'rate-limited') return { cls: 'stale', text: `rate limited, resumes ${rel(s.retryAt)}` };
   if (s.error) return { cls: s.data ? 'stale' : 'err', text: s.error };
   if (s.status === 'cached') return { cls: 'stale', text: 'from cache' };
-  return { cls: 'ok', text: `updated ${rel(s.fetchedAt)} · ${(s.durationMs / 1000).toFixed(1)}s` };
+  const budget = snap.limits?.[SOURCE_PLATFORM[key]];
+  const left = budget?.limit ? ` · API budget ${fmt.format(budget.remaining)} / ${fmt.format(budget.limit)}` : '';
+  return { cls: 'ok', text: `updated ${rel(s.fetchedAt)} · ${(s.durationMs / 1000).toFixed(1)}s${left}` };
 }
 
 function renderShell() {

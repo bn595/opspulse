@@ -1,7 +1,12 @@
 'use strict';
 // HTTP client on node:http/https (Node's fetch does not support proxies). Provides per-platform
-// proxies, an optional extra CA, timeouts, retries on 429/5xx and rate-limit 403s, descriptive
-// errors and Link-header pagination. Each request names a `platform` to select its proxy.
+// proxies, timeouts and rate limiting, an optional extra CA, retries on 5xx, descriptive errors and
+// Link-header pagination. Each request names a `platform`.
+//
+// Rate limiting, per platform: requests stop before a reported budget (x-ratelimit-*) runs out;
+// a short Retry-After is waited out; a long one, an exhausted budget, or a 429 without Retry-After
+// blocks the platform (backing off 2, 4, 8, 16, 30 minutes). While blocked, requests fail fast with
+// a RateLimitError carrying `retryAt`.
 
 const http = require('http');
 const https = require('https');
@@ -9,8 +14,10 @@ const tls = require('tls');
 const fs = require('fs');
 
 const UA = 'opspulse';
-let net = { proxies: {}, ca: undefined, timeoutMs: 30000 };
+let net = { proxies: {}, ca: undefined, timeoutSeconds: 30, timeouts: {}, now: Date.now };
 const agents = new Map();
+const limits = new Map(); // platform -> { limit, remaining, resetAt, blockedUntil, backoff }; kept across configure()
+const BACKOFF_MINUTES = [2, 4, 8, 16, 30];
 
 class ApiError extends Error {
   constructor(message, status, url) {
@@ -19,11 +26,17 @@ class ApiError extends Error {
     this.url = url;
   }
 }
+class RateLimitError extends ApiError {
+  constructor(message, url, retryAt) {
+    super(message, 429, url);
+    this.retryAt = retryAt;
+  }
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Applies network settings. Called at startup and on config reload.
 function configure(network = {}) {
-  net = { proxies: network.proxies || {}, timeoutMs: (network.timeoutSeconds || 30) * 1000, ca: undefined };
+  net = { proxies: network.proxies || {}, timeoutSeconds: network.timeoutSeconds || 30, timeouts: network.timeouts || {}, now: network.now || Date.now, ca: undefined };
   if (network.caFile) {
     // `ca` replaces the bundled roots, so append to them.
     net.ca = [...tls.rootCertificates, fs.readFileSync(network.caFile, 'utf8')];
@@ -125,6 +138,30 @@ function hintFor(status) {
   return '';
 }
 
+function limitFor(platform) {
+  if (!limits.has(platform)) limits.set(platform, { limit: null, remaining: null, resetAt: null, blockedUntil: null, backoff: 0 });
+  return limits.get(platform);
+}
+function readBudget(l, headers) {
+  const remaining = headers.get('x-ratelimit-remaining');
+  if (remaining == null) return;
+  l.remaining = Number(remaining);
+  l.limit = Number(headers.get('x-ratelimit-limit')) || l.limit;
+  l.resetAt = Number(headers.get('x-ratelimit-reset')) * 1000 || l.resetAt;
+}
+const reserveFor = (limit) => Math.max(20, Math.ceil(limit * 0.02));
+const clockTime = (ms) => `${new Date(ms).toISOString().slice(11, 16)} UTC`;
+function block(platform, url, until, reason) {
+  limitFor(platform).blockedUntil = until;
+  return new RateLimitError(`${reason}; next attempt at ${clockTime(until)}`, url, until);
+}
+
+// { platform: { limit, remaining, resetAt, blockedUntil } } for platforms seen so far.
+function rateLimitStatus() {
+  const now = net.now();
+  return Object.fromEntries([...limits].map(([p, l]) => [p, { limit: l.limit, remaining: l.remaining, resetAt: l.resetAt, blockedUntil: l.blockedUntil > now ? l.blockedUntil : null }]));
+}
+
 function describeNetError(e, url, timeoutMs) {
   const host = new URL(url).host;
   if (e.code === 'ETIMEDOUT' || e.message === 'timeout') return `timed out after ${timeoutMs / 1000}s calling ${host}`;
@@ -137,8 +174,10 @@ function describeNetError(e, url, timeoutMs) {
 
 // request(url, opts) -> { status, data, headers }
 //   opts: method, headers, body (object is sent as JSON), platform, timeoutMs, retries,
-//         throwOnError (default true; non-2xx throws ApiError)
-async function request(url, { method = 'GET', headers = {}, body, platform = 'default', timeoutMs = net.timeoutMs, retries = 2, throwOnError = true } = {}) {
+//         throwOnError (default true; non-2xx throws ApiError, rate limits throw RateLimitError)
+async function request(url, { method = 'GET', headers = {}, body, platform = 'default', timeoutMs = (net.timeouts[platform] ?? net.timeoutSeconds) * 1000, retries = 2, throwOnError = true } = {}) {
+  const host = new URL(url).host;
+  const l = limitFor(platform);
   const h = { 'User-Agent': UA, Accept: 'application/json', ...headers };
   let payload;
   if (body !== undefined) {
@@ -149,6 +188,11 @@ async function request(url, { method = 'GET', headers = {}, body, platform = 'de
 
   let attempt = 0;
   for (;;) {
+    const now = net.now();
+    if (l.blockedUntil > now) throw new RateLimitError(`${host} is rate limited; next attempt at ${clockTime(l.blockedUntil)}`, url, l.blockedUntil);
+    if (l.limit && l.remaining != null && l.resetAt > now && l.remaining <= reserveFor(l.limit)) {
+      throw block(platform, url, l.resetAt, `${host} request budget nearly used (${l.remaining} of ${l.limit} left)`);
+    }
     let res;
     try {
       res = await rawRequest(url, { method, headers: h, body: payload, platform, timeoutMs });
@@ -157,12 +201,19 @@ async function request(url, { method = 'GET', headers = {}, body, platform = 'de
       throw new ApiError(describeNetError(e, url, timeoutMs), 0, url);
     }
 
-    const retryAfter = Number(res.headers.get('retry-after'));
-    const retryable = res.status === 429 || res.status >= 500 || (res.status === 403 && retryAfter > 0);
-    if (retryable && attempt++ < retries) {
-      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 30) * 1000 : 1500 * attempt);
-      continue;
+    readBudget(l, res.headers);
+    const retryAfter = Number(res.headers.get('retry-after')) || 0;
+    const limited = res.status === 429 || (res.status === 403 && (retryAfter > 0 || l.remaining === 0 || /secondary rate limit/i.test(res.text)));
+    if (limited) {
+      if (retryAfter > 0 && retryAfter <= 60 && attempt++ < retries) { await sleep(retryAfter * 1000); continue; }
+      let until;
+      if (retryAfter > 0) until = now + retryAfter * 1000;
+      else if (l.remaining === 0 && l.resetAt > now) until = l.resetAt;
+      else until = now + BACKOFF_MINUTES[Math.min(l.backoff++, BACKOFF_MINUTES.length - 1)] * 60e3;
+      throw block(platform, url, until, `rate limited by ${host}`);
     }
+    if (res.status >= 500 && attempt++ < retries) { await sleep(1500 * attempt); continue; }
+    if (res.status < 400) { l.backoff = 0; l.blockedUntil = null; }
 
     let data = null;
     if (res.text) {
@@ -189,4 +240,4 @@ function nextLink(headers) {
   return m ? m.slice(m.indexOf('<') + 1, m.indexOf('>')) : null;
 }
 
-module.exports = { configure, request, nextLink, ApiError, sleep };
+module.exports = { configure, request, nextLink, rateLimitStatus, ApiError, RateLimitError, sleep };
