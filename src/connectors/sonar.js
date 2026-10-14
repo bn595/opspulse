@@ -19,8 +19,12 @@ async function collect(cfg, secrets) {
 
   let orgKeys = sc.organizations;
   if (!orgKeys.length) {
-    const r = await get('/api/organizations/search?member=true&ps=100');
-    orgKeys = (r.organizations || []).map((o) => o.key);
+    orgKeys = [];
+    for (let page = 1; ; page++) {
+      const r = await get(`/api/organizations/search?member=true&ps=100&p=${page}`);
+      orgKeys.push(...(r.organizations || []).map((o) => o.key));
+      if (!r.organizations?.length || orgKeys.length >= (r.paging?.total ?? 0)) break;
+    }
   }
 
   const staleDate = new Date(Date.now() - sc.staleDays * 86400e3).toISOString().slice(0, 10);

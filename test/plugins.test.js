@@ -165,3 +165,9 @@ test('ctx.request routes through the proxy of the plugin platform option by defa
 test('a facet column cannot be named q, which is reserved for search', async () => {
   await assert.rejects(runPlugin(plugin(async () => ({ table: { columns: [{ key: 'q', facet: true }], rows: [] } })), {}), /access-report: table\.columns\[0\]\.key "q" is reserved for search/);
 });
+
+test('ctx.previous holds the plugin result from the last refresh, for incremental work', async () => {
+  const last = { metrics: [{ label: 'Projects', value: 10 }] };
+  assert.deepEqual(contextFor({}, { previous: last }).previous, last);
+  assert.equal(contextFor({}).previous, null);
+});
