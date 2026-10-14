@@ -928,15 +928,23 @@ let pollTimer;
 async function poll() {
   clearTimeout(pollTimer);
   try {
-    const res = await fetch('/api/snapshot', { cache: 'no-store' });
-    snap = await res.json();
-    // Re-render only on data changes to preserve scroll position and input focus.
-    const key = JSON.stringify([snap.feed.map((i) => i.id + (i.muted?.kind || '')), snap.lastRefreshAt, snap.refreshing, snap.auth?.signedIn, snap.auth?.needsLogin, snap.auth?.device?.userCode, snap.auth?.error, Object.values(snap.sources).map((s) => [s.status, s.fetchedAt, s.error])]);
-    if (key !== lastKey) { lastKey = key; renderAll(); } else { now = Date.now(); renderShell(); }
+    // The status is small; the snapshot is fetched and rendered only when something changed,
+    // which also keeps scroll position and input focus stable.
+    const st = await (await fetch('/api/status', { cache: 'no-store' })).json();
+    const key = `${st.revision}|${st.authKey}`;
+    if (!snap || key !== lastKey) {
+      snap = await (await fetch('/api/snapshot', { cache: 'no-store' })).json();
+      lastKey = key;
+      renderAll();
+    } else {
+      Object.assign(snap, { refreshing: st.refreshing, lastRefreshAt: st.lastRefreshAt, nextRefreshAt: st.nextRefreshAt });
+      now = Date.now();
+      renderShell();
+    }
   } catch {
     $('#updated').textContent = 'Server unreachable — is opspulse still running?';
   }
-  pollTimer = setTimeout(poll, snap?.refreshing || snap?.auth?.device ? 1500 : 15000);
+  pollTimer = setTimeout(poll, snap?.refreshing || snap?.auth?.device ? 1500 : 5000);
 }
 
 $('#refresh').onclick = async () => {

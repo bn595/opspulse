@@ -263,6 +263,11 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (p === '/api/snapshot' && req.method === 'GET') return send(res, 200, snapshot());
+    // Polled by the browser; the full snapshot is fetched only when `revision` or `authKey` changes.
+    if (p === '/api/status' && req.method === 'GET') {
+      const a = store.authStatus();
+      return send(res, 200, { revision, refreshing: !!refreshing, lastRefreshAt, nextRefreshAt, authKey: [a.signedIn, a.needsLogin, a.device?.userCode, a.error].join('|') });
+    }
     if (p === '/api/auth/status' && req.method === 'GET') return send(res, 200, store.authStatus());
 
     if (req.method === 'POST') {
@@ -273,6 +278,7 @@ const server = http.createServer(async (req, res) => {
       if (FEED_ACTIONS[p]) {
         const body = await readJson(req);
         try { FEED_ACTIONS[p](body); } catch (e) { return send(res, 400, { error: e.message }); }
+        revision++;
         return send(res, 200, { ok: true });
       }
       return send(res, 404, { error: 'not found' });
