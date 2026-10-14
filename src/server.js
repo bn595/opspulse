@@ -183,6 +183,15 @@ async function refresh(force = false) {
   return refreshing;
 }
 
+// Sources as sent to the browser: connector sync state (`_sync`) stays on the server.
+function publicSources() {
+  return Object.fromEntries(Object.entries(sources).map(([k, s]) => {
+    if (!s.data?._sync) return [k, s];
+    const { _sync, ...data } = s.data;
+    return [k, { ...s, data }];
+  }));
+}
+
 function snapshot() {
   const auth = store.authStatus();
   const extra = secretErrors.map((e, i) => ({ id: `secret-${i}`, level: auth.needsLogin ? 'warn' : 'critical', source: 'secrets', title: auth.needsLogin && /sign-in required/i.test(e) ? 'Sign in to load secrets from Key Vault' : 'Secret unavailable', detail: e }));
@@ -197,7 +206,7 @@ function snapshot() {
     refreshing: !!refreshing,
     config: config.publicView(cfg, auth),
     auth,
-    sources,
+    sources: publicSources(),
     feed: acks.annotate(feed.build(sources, cfg, Date.now(), DEMO ? [] : extra)),
   };
 }

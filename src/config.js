@@ -48,10 +48,13 @@ const DEFAULTS = {
     dismissals: {
       enabled: true,
       refreshMinutes: 60,
+      enterprise: '', // enterprise slug: query enterprise-wide endpoints instead of `orgs` (classic token)
       orgs: [],
       lookbackDays: 30,
       tools: ['code-scanning', 'secret-scanning', 'dependabot'],
       secretResolutions: ['false_positive', 'wont_fix', 'used_in_tests', 'pattern_edited', 'pattern_deleted'],
+      dependabotStates: ['dismissed'], // add 'auto_dismissed' to include alerts Dependabot dismissed itself
+      fullResyncHours: 24,
       maxPagesPerTool: 20,
       feed: false,
       feedWarnCount: 25,
@@ -166,7 +169,7 @@ function load(configPath) {
       throw new Error(`Could not parse ${file}: ${e.message}`);
     }
   }
-  const cfg = merge(DEFAULTS, user);
+  const cfg = merge(structuredClone(DEFAULTS), user); // clone so callers can never alter the defaults
   cfg._file = file;
   cfg._exists = exists;
   cfg._dir = dir;

@@ -726,7 +726,7 @@ function renderGhas() {
   const items = applyFilters('ghas', base).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   const orgSel = ui.filters.ghas?.org;
   const sel = orgSel ? d.orgs.filter((o) => o.org === orgSel) : d.orgs;
-  const errs = sel.flatMap((o) => Object.entries(o.errors).map(([t, e]) => `${o.org} · ${TOOL[t]?.[2] || t}: ${e}`));
+  const errs = [...Object.entries(d.errors || {}).map(([t, e]) => `${d.enterprise} · ${TOOL[t]?.[2] || t}: ${e}`), ...sel.flatMap((o) => Object.entries(o.errors).map(([t, e]) => `${o.org} · ${TOOL[t]?.[2] || t}: ${e}`))];
   const hidden = sel.reduce((n, o) => n + (o.hidden || 0), 0);
 
   const forTabs = applyFilters('ghas', base, 'org');
@@ -759,7 +759,8 @@ function renderGhas() {
 
   $('#ghas-body').innerHTML = `${g.banner}${tabs}
     ${errs.length ? `<div class="alert warn">${errs.map(esc).join('<br>')}</div>` : ''}
-    ${sel.some((o) => o.truncated.length) ? '<div class="alert warn">Some results hit <code>maxPagesPerTool</code>; counts may be low.</div>' : ''}
+    ${d.truncated?.length || sel.some((o) => o.truncated.length) ? '<div class="alert warn">Some results hit <code>maxPagesPerTool</code>; counts may be low until the next full sync.</div>' : ''}
+    ${d.mode === 'enterprise' ? `<div class="muted small rules-note">Enterprise <b>${esc(d.enterprise)}</b> · organizations where you are an owner or security manager</div>` : ''}
     ${hidden ? `<div class="muted small rules-note">${plural(hidden, 'dismissal')} hidden by config rules</div>` : ''}
     <div class="minis">${total}${minis}</div>
     <h3>Dismissals per day</h3>
