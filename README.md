@@ -230,6 +230,7 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 | key | default | |
 |---|---|---|
 | `url` | `https://sonarqube.us` | EU region: `https://sonarcloud.io` |
+| `apiUrl` | derived | Web API v2 host; empty means `https://api.` + the host of `url` (e.g. `https://api.sonarqube.us`) |
 | `refreshMinutes` | `60` | |
 | `organizations` | all orgs you're a member of | |
 | `staleDays` | `30` | "Not analyzed in N days" |
@@ -258,6 +259,14 @@ Everything has a default. Only set what you need. See [`config.example.jsonc`](c
 
 ### `plugins`
 A list of `{ "path": "...", "id"?, "title"?, "enabled"?, ...options }`. Paths are relative to the config file. See [Plugins](#plugins).
+
+### `admin`
+| key | default | |
+|---|---|---|
+| `concurrency` | `5` | Changes made at once by the admin tools; halved automatically if SonarQube Cloud rate-limits |
+
+### `logging`, `storage`
+See [Logging](#logging) and [Storage](#storage).
 
 ---
 
@@ -373,6 +382,65 @@ module.exports = {
 
 Plugins are ordinary Node modules running with the same access as opspulse itself, including your tokens, so only load code you trust. [`plugins/examples/runs-by-actor.js`](plugins/examples/runs-by-actor.js) is a complete example that needs no API calls; `npm run demo` shows it.
 
+## Admin tools (SonarQube Cloud)
+
+The **Admin** view (side navigation, or `#/admin`) holds bulk tools for SonarQube Cloud. Every tool follows the same steps: choose an organization and projects, **preview** what would change, untick anything you want to leave alone, **confirm**, then watch per-project results with links. Results can be exported as CSV.
+
+| Tool | What it does |
+|---|---|
+| **Name drift** | Lists every project in an organization whose key no longer follows its name, which happens when a repository is renamed: SonarQube Cloud picks up the new name but keeps the old key. |
+| **Project keys** | Updates the keys of chosen projects to follow their current name. |
+| **Long-lived branch pattern** | Sets `sonar.branch.longLivedBranches.regex` on chosen projects. Includes a tester that shows whether a branch name would be long-lived. |
+| **Delete branch** | Deletes one branch from chosen projects. Main branches are never deleted. |
+| **Make branch long-lived** | Sets the pattern, then deletes the branch where it exists as short-lived, so its next analysis recreates it as long-lived. A branch's type is fixed at its first analysis, so this is the way to turn an existing branch long-lived. |
+
+**How a new key is derived.** Everything up to and including the first `_` of the current key is kept exactly (case included), followed by the project's current name: `Acme-Corp_payments-api`, renamed to `payments-service`, becomes `Acme-Corp_payments-service`. The preview flags keys without an `_`, names that aren't valid in a key, and target keys already taken anywhere in SonarQube Cloud.
+
+**Choosing projects.** By name prefix (case-insensitive; empty means every project) or a pasted list of keys.
+
+**Safety.**
+- A preview is stored on the server and applied by id within 30 minutes, once, so what changes is exactly what was previewed.
+- Applying requires confirmation; deleting a branch requires typing its name.
+- Changing a key breaks pipelines that still pass the old `sonar.projectKey`; the preview says so.
+- The admin tools act with the configured SonarQube Cloud token, so what a user can change is what that token may administer (each project needs **Administer**).
+- Every change is an `audit` log event: who, which project, before and after, and the result.
+
+**Speed.** Changes run `admin.concurrency` at a time (default 5). If SonarQube Cloud rate-limits the run, the remaining projects wait for the block to end and continue at half the concurrency; nothing needs re-running.
+
+**APIs.** Project listing and key checks use Web API v2 (5,000 projects per page); the changes use Web API v1, which v2 does not cover yet. [`docs/sonar-api.md`](docs/sonar-api.md) lists every call, and [issue #1](https://github.com/bn595/opspulse/issues/1) tracks moving the rest to v2.
+
+`npm run demo` includes a stand-in SonarQube Cloud (organizations `acme` and `acme-labs`) for trying the tools safely.
+
+## Logging
+
+opspulse logs to stdout, one JSON object per line (`time`, `level`, `event`, fields). That is what container platforms collect: in Azure Container Apps the lines land in Log Analytics without configuration. At a terminal the same records print as readable lines.
+
+| key | default | |
+|---|---|---|
+| `logging.format` | `auto` | `json`, `pretty`, or `auto` (pretty at a terminal, JSON otherwise) |
+| `logging.file` | `""` | Also append every record, as JSON, to this file (relative to the config file) |
+
+Levels are `info`, `warn`, `error` and `audit`. Fields whose names look like credentials (token, secret, password, authorization) are replaced with `[redacted]`.
+
+## Storage
+
+State that should survive a restart (the dashboard snapshot cache and acknowledgements) goes through `storage.backends`:
+
+```jsonc
+"storage": {
+  "backends": [
+    { "type": "file", "dir": ".cache" },                                       // the default
+    { "type": "module", "path": "./storage/blob.js", "container": "opspulse" }  // your own backend
+  ]
+}
+```
+
+- `[]` keeps nothing between restarts (memory only), which suits a stateless container.
+- With several backends, writes go to all of them and reads come from the first that has the document. A failing backend is logged and skipped.
+- A module backend exports `createStorage(options, { log })` returning `{ get(key), set(key, value), delete(key) }` (all async; `get` returns `null` when there is nothing). Every option except `type` and `path` is passed through, plus `baseDir` (the config file's directory).
+- [`storage/examples/sqlite.js`](storage/examples/sqlite.js) is a working backend on Node's built-in `node:sqlite` (Node 22.5+, no package). [`storage/examples/template.js`](storage/examples/template.js) is a starting point for others, such as Azure Blob Storage.
+- `npm run check` writes, reads back and deletes a test document in every configured backend.
+
 ## Running at scale
 
 opspulse is built for large enterprises (tens of thousands of repositories, many organizations). What it costs per refresh:
@@ -412,7 +480,7 @@ All rules live in [`src/feed.js`](src/feed.js) and are plain functions of the fe
 
 ```
 src/
-  server.js           HTTP server (loopback only), refresh loop, cache, sign-in routes
+  server.js           HTTP server (loopback only), refresh loop, sign-in and admin routes
   schedule.js         which sources are due to refresh
   config.js           config (JSON with comments) + .env loading
   secrets.js          resolves keyvault:/env:/file: refs; holds secrets in memory only
@@ -422,7 +490,14 @@ src/
   rules.js            include/exclude rules for connector data
   acks.js             acknowledged and snoozed feed items
   plugins.js          plugin loading, output validation, plugin context
+  sources.js          the built-in sources table; what the browser may see of them
+  log.js              structured logging to stdout
+  storage.js          pluggable storage backends
   demo.js             synthetic data for --demo
+  demo-sonar.js       stand-in SonarQube Cloud for the admin tools in --demo
+  admin/
+    plan.js           admin previews (key derivation, drift, branch pattern, deletion)
+    sonar.js          admin reads (v2) and changes (v1), concurrency and rate-limit handling
   connectors/
     actions.js        GitHub Actions runs
     dismissals.js     GHAS dismissals (code scanning, secret scanning, Dependabot)
@@ -431,7 +506,10 @@ src/
 public/
   view.js             filtering, breakdowns, URL state, CSV, panel order (shared with the tests)
   app.js              rendering and interaction
+  admin.js            the admin view
 plugins/examples/     example plugin
+storage/examples/     SQLite storage backend and a template
+docs/sonar-api.md     every SonarQube Cloud call and whether it uses Web API v1 or v2
 scripts/check-config.js
 test/                 node:test suites, run with npm test
 ```
@@ -444,16 +522,17 @@ Each connector is `collect(cfg, secrets) -> plain JSON`, with no knowledge of th
 npm test
 ```
 
-Tests use Node's built-in runner, so there is still nothing to install. They test behaviour at module interfaces: rules, the feed, view logic, acknowledgements, plugins, the HTTP client (against local fake proxies) and the secret store (against local fake Entra and Key Vault endpoints). Nothing in the suite calls a real external service.
+Tests use Node's built-in runner, so there is still nothing to install. They test behaviour at module interfaces: rules, the feed, view logic, scheduling, acknowledgements, storage, logging, plugins, the admin tools, the connectors (against local fake GitHub and SonarQube Cloud APIs), the HTTP client (against local fake proxies) and the secret store (against local fake Entra and Key Vault endpoints). Nothing in the suite calls a real external service.
 
 ## Security notes
 
-- The server binds to `127.0.0.1` and rejects requests whose `Host` isn't `localhost` / `127.0.0.1` / `[::1]` (DNS-rebinding protection). Every state-changing endpoint (refresh, sign-in, sign-out, acknowledge) requires a custom header, so other websites can't trigger them. Request bodies are capped at 4 KB.
+- The server binds to `127.0.0.1` and rejects requests whose `Host` isn't `localhost` / `127.0.0.1` / `[::1]` (DNS-rebinding protection). Every state-changing endpoint (refresh, sign-in, sign-out, acknowledge, admin) requires a custom header, so other websites can't trigger them. Request bodies are capped at 4 KB (2 MB for admin requests, which carry project lists).
 - Browser sign-in uses PKCE and a one-time `state`; a callback with an unknown or reused `state` is rejected.
 - Tokens, secret values and proxy credentials are never sent to the browser. `/api/snapshot` only carries fetched data, per-secret status, and proxy host names.
 - Ticket summaries and dismissal comments are user-generated. The UI escapes all of it, and a strict CSP blocks inline and third-party scripts. CSV exports prefix text cells that start with `=`, `+`, `-` or `@` so spreadsheet applications don't run them as formulas.
 - Plugins run with the same access as opspulse, including tokens. Only load plugin code you trust.
-- `.cache/snapshot.json` holds fetched data (ticket titles, alert titles), never tokens. It is git-ignored and safe to delete.
+- The stored snapshot (`.cache/snapshot.json` with the default file backend) holds fetched data (ticket titles, alert titles), never tokens. It is git-ignored and safe to delete.
+- The admin view can change SonarQube Cloud projects for anyone who can open the dashboard, limited by the configured token's permissions. Keep the server on loopback.
 - `config.json`, `config.jsonc` and `.env` are git-ignored.
 
 ## Known limitations

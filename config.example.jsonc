@@ -19,6 +19,28 @@
     "hide": []
   },
 
+  // SonarQube Cloud admin tools (Admin view).
+  "admin": {
+    // Changes made at once. If SonarQube Cloud rate-limits a run, it waits and continues at half
+    // this number. Higher is faster until SonarQube Cloud pushes back; it does not publish its limits.
+    "concurrency": 5
+  },
+
+  // Logs go to stdout (collected by container platforms such as Azure Container Apps).
+  "logging": {
+    "format": "auto",   // auto (readable at a terminal, JSON otherwise) | json | pretty
+    "file": ""          // optional: also append JSON lines to this file
+  },
+
+  // Where state is kept between restarts. [] keeps nothing; with several, all are written to.
+  // See storage/examples/ for a SQLite backend and a template for your own (e.g. Azure Blob).
+  "storage": {
+    "backends": [
+      { "type": "file", "dir": ".cache" }
+      // { "type": "module", "path": "./storage/examples/sqlite.js", "file": ".cache/opspulse.db" }
+    ]
+  },
+
   // ---------------------------------------------------------------------------
   // Network: proxy URL per platform; empty means direct. Node does not read HTTPS_PROXY.
   // For proxies that require credentials (user:pass@host), use an env: reference.
@@ -104,6 +126,7 @@
 
   "sonar": {
     "url": "https://sonarqube.us",      // EU region: https://sonarcloud.io
+    "apiUrl": "",                       // Web API v2 host; empty = derived (https://api.sonarqube.us)
     "token": "keyvault:sonar-token",    // or "env:OPSPULSE_SONAR_TOKEN"
     "organizations": ["your-org"],
     "staleDays": 30,
