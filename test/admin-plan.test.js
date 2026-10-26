@@ -31,8 +31,21 @@ test('a target key that exists, or that two projects would share, is a conflict'
 });
 
 test('drift lists projects whose key no longer follows their name', () => {
-  const rows = plan.findDrift([{ key: 'Acme_api', name: 'api' }, { key: 'Acme_web', name: 'portal' }, { key: 'legacy', name: 'x' }, { key: 'Acme_db', name: 'Data Base' }]);
+  const rows = plan.findDrift([{ key: 'Acme_api', name: 'api' }, { key: 'Acme_web', name: 'portal' }, { key: 'Acme_db', name: 'Data Base' }]);
   assert.deepEqual(brief(rows, 'status'), [['Acme_web', 'change'], ['Acme_db', 'invalid']]);
+});
+
+test('drift also lists keys in an unrecognized format whose name differs, for manual follow-up', () => {
+  const rows = plan.findDrift([{ key: 'legacyreports', name: 'reports' }, { key: 'reports2', name: 'reports2' }]);
+  assert.deepEqual(brief(rows, 'status', 'actionable'), [['legacyreports', 'unrecognized', false]]);
+});
+
+test('a branch pattern is required', () => {
+  const p = [{ key: 'Acme_a', name: 'a', pattern: 'x', branches: [] }];
+  for (const pattern of ['', '  ', undefined, null]) {
+    assert.throws(() => plan.planPattern(p, pattern), /pattern is required/);
+    assert.throws(() => plan.planLongLived(p, pattern, 'dev'), /pattern is required/);
+  }
 });
 
 test('the branch pattern changes unless the project already uses it', () => {

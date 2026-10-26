@@ -13,8 +13,12 @@
 //   set(key, value) -> store value (replace any existing one)
 //   delete(key)     -> remove it (no error if it does not exist)
 // Throw on failure; opspulse logs the error and carries on with the other backends.
+//
+// Make HTTP calls with `request`, not fetch or an SDK: it goes through the configured proxy and CA
+// (network.proxies.azure by default; pass { platform } to use another) and opspulse's rate limiting.
+//   const res = await request(url, { method: 'PUT', headers, body }); // -> { status, headers, data }
 
-function createStorage(options, { log }) {
+function createStorage(options, { log, request }) {
   return {
     name: `template ${options.container || ''}`.trim(),
     async get(key) {

@@ -91,7 +91,7 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
   // Projects by name prefix (case-insensitive; '' = all) or by key. Keys that don't exist come back
   // as { key, missing: true } in the order given. v2 has no name search, so prefixes filter locally.
   async function listProjects(org, { prefix = '', keys = null }) {
-    const organizationIds = await orgId(org);
+    const organizationIds = await orgId(org); // the v2 filter takes a list; one organization here
     if (keys) {
       const found = new Map();
       for (const part of chunks(keys, CHUNK)) {
@@ -104,7 +104,8 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     for (let pageIndex = 1; ; pageIndex++) {
       const d = await getV2('/projects/projects', { organizationIds, pageSize: PAGE_V2, pageIndex });
       out.push(...(d.projects || []).map((c) => ({ key: c.key, name: c.name })));
-      if (!d.projects?.length || out.length >= (d.page?.total ?? 0)) break;
+      // Without a total, keep going until a page comes back empty.
+      if (!d.projects?.length || (d.page?.total != null && out.length >= d.page.total)) break;
     }
     const lower = prefix.toLowerCase();
     return out.filter((c) => c.name.toLowerCase().startsWith(lower));
@@ -123,7 +124,11 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     });
     return new Set(taken.filter(Boolean));
   }
-  const targetsOf = (rows) => rows.filter((r) => r.status === 'change').map((r) => r.to);
+  // Plans keys twice: once to learn the target keys, then again knowing which of them are taken.
+  async function planWithTakenKeys(planFn, projects) {
+    const targets = planFn(projects).filter((r) => r.status === 'change').map((r) => r.to);
+    return planFn(projects, { existingKeys: await existingKeys(targets) });
+  }
 
   const withPattern = (projects) => mapLimit(projects, concurrency, async (p) => {
     const d = await get('/api/settings/values', { component: p.key, keys: plan.PATTERN_SETTING });
@@ -142,8 +147,9 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     const projects = listed.filter((p) => !p.missing);
     const missing = listed.filter((p) => p.missing).map((p) => ({ project: p.key, name: null, status: 'not-found', actionable: false }));
     let rows;
-    if (tool === 'drift') rows = plan.findDrift(projects, { existingKeys: await existingKeys(targetsOf(plan.findDrift(projects))) });
-    else if (tool === 'keys') rows = plan.planKeys(projects, { existingKeys: await existingKeys(targetsOf(plan.planKeys(projects))) }); else if (tool === 'pattern') rows = plan.planPattern(await withPattern(projects), pattern);
+    if (tool === 'drift') rows = await planWithTakenKeys(plan.findDrift, projects);
+    else if (tool === 'keys') rows = await planWithTakenKeys(plan.planKeys, projects);
+    else if (tool === 'pattern') rows = plan.planPattern(await withPattern(projects), pattern);
     else if (tool === 'delete') rows = plan.planDelete(await withBranches(projects), branch);
     else if (tool === 'longlived') rows = plan.planLongLived(await withBranches(await withPattern(projects)), pattern, branch);
     else throw new Error(`unknown admin tool "${tool}"`);
@@ -152,12 +158,16 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     return { rows: [...rows, ...missing].sort((a, b) => order.get(a.project) - order.get(b.project)).map((r) => ({ ...r, org, url: link(r.project), result: null, error: null })) };
   }
 
-  // Performs one row; each step is audited. Throws RateLimitError so the queue can retry the row.
-  async function applyRow(tool, row) {
-    const audit = (event, fields, result, error) => log.audit(event, { actor, org: row.org, project: row.project, ...fields, result, ...(error ? { error } : {}) });
+  // Performs one row; each step is audited. Throws RateLimitError so the queue can retry the row;
+  // steps that already succeeded are skipped on the retry.
+  async function applyRow(tool, row, run) {
+    const audit = (event, fields, result, error) => log.audit(event, { ...(run ? { run } : {}), actor, org: row.org, project: row.project, ...fields, result, ...(error ? { error } : {}) });
+    row.stepsDone = row.stepsDone || [];
     const step = async (event, fields, call) => {
+      if (row.stepsDone.includes(event)) return;
       try {
         await call();
+        row.stepsDone.push(event);
         audit(event, fields, 'done');
       } catch (e) {
         if (e instanceof RateLimitError) throw e;
@@ -174,7 +184,7 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
         await step('sonar.branch_pattern_set', { from: row.from, to: row.to }, () => post('/api/settings/set', { component: row.project, key: plan.PATTERN_SETTING, value: row.to }));
       }
       if (tool === 'delete' || (tool === 'longlived' && row.deleteBranch)) {
-        await step('sonar.branch_deleted', { branch: row.branch }, () => post('/api/project_branches/delete', { project: row.project, branch: row.branch }));
+        await step('sonar.branch_deleted', { branch: row.branch, type: row.type, analysisDate: row.analysisDate }, () => post('/api/project_branches/delete', { project: row.project, branch: row.branch }));
       }
       row.result = 'done';
       row.error = null;
@@ -189,7 +199,8 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
   }
 
   // Applies the actionable rows whose project is in `selected`; returns all rows with results.
-  async function apply(tool, rows, { selected = [], onProgress = () => {} } = {}) {
+  // `run` labels the audit events of one run.
+  async function apply(tool, rows, { selected = [], run = null, onProgress = () => {} } = {}) {
     const chosen = new Set(selected);
     const out = rows.map((r) => ({ ...r }));
     const todo = out.filter((r) => r.actionable && chosen.has(r.project));
@@ -199,7 +210,7 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     await runQueue(todo, async (row) => {
       row.result = 'running';
       report();
-      await applyRow(tool, row);
+      await applyRow(tool, row, run);
       report();
     }, {
       concurrency, now, wait,

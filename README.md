@@ -388,7 +388,7 @@ The **Admin** view (side navigation, or `#/admin`) holds bulk tools for SonarQub
 
 | Tool | What it does |
 |---|---|
-| **Name drift** | Lists every project in an organization whose key no longer follows its name, which happens when a repository is renamed: SonarQube Cloud picks up the new name but keeps the old key. |
+| **Name drift** | Lists every project in an organization whose key no longer follows its name, which happens when a repository is renamed: SonarQube Cloud picks up the new name but keeps the old key. Keys in another format (no `_`) are listed too when the name differs, for follow-up by hand. |
 | **Project keys** | Updates the keys of chosen projects to follow their current name. |
 | **Long-lived branch pattern** | Sets `sonar.branch.longLivedBranches.regex` on chosen projects. Includes a tester that shows whether a branch name would be long-lived. |
 | **Delete branch** | Deletes one branch from chosen projects. Main branches are never deleted. |
@@ -403,7 +403,7 @@ The **Admin** view (side navigation, or `#/admin`) holds bulk tools for SonarQub
 - Applying requires confirmation; deleting a branch requires typing its name.
 - Changing a key breaks pipelines that still pass the old `sonar.projectKey`; the preview says so.
 - The admin tools act with the configured SonarQube Cloud token, so what a user can change is what that token may administer (each project needs **Administer**).
-- Every change is an `audit` log event: who, which project, before and after, and the result.
+- Every change is an `audit` log event: the run, who, which project, before and after (for a deleted branch, its type and last analysis), and the result.
 
 **Speed.** Changes run `admin.concurrency` at a time (default 5). If SonarQube Cloud rate-limits the run, the remaining projects wait for the block to end and continue at half the concurrency; nothing needs re-running.
 
@@ -437,7 +437,7 @@ State that should survive a restart (the dashboard snapshot cache and acknowledg
 
 - `[]` keeps nothing between restarts (memory only), which suits a stateless container.
 - With several backends, writes go to all of them and reads come from the first that has the document. A failing backend is logged and skipped.
-- A module backend exports `createStorage(options, { log })` returning `{ get(key), set(key, value), delete(key) }` (all async; `get` returns `null` when there is nothing). Every option except `type` and `path` is passed through, plus `baseDir` (the config file's directory).
+- A module backend exports `createStorage(options, { log, request })` returning `{ get(key), set(key, value), delete(key) }` (all async; `get` returns `null` when there is nothing). Every option except `type` and `path` is passed through, plus `baseDir` (the config file's directory). `request` is opspulse's HTTP client; use it for network calls so they go through the `network.proxies.azure` proxy (or another, with `{ platform }`), the CA file and rate limiting.
 - [`storage/examples/sqlite.js`](storage/examples/sqlite.js) is a working backend on Node's built-in `node:sqlite` (Node 22.5+, no package). [`storage/examples/template.js`](storage/examples/template.js) is a starting point for others, such as Azure Blob Storage.
 - `npm run check` writes, reads back and deletes a test document in every configured backend.
 

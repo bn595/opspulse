@@ -49,13 +49,6 @@ function startDemoSonar() {
         const key = decodeURIComponent(u.pathname.slice('/projects/project-keys/'.length));
         return find(key) ? send(200, { key }) : send(404, { message: 'Not Found' });
       }
-      if (u.pathname === '/api/projects/search') {
-        let list = projects.filter((p) => p.org === q.get('organization'));
-        if (q.get('projects')) { const keys = q.get('projects').split(','); list = list.filter((p) => keys.includes(p.key)); }
-        if (q.get('q')) { const s = q.get('q').toLowerCase(); list = list.filter((p) => p.name.toLowerCase().includes(s) || p.key.toLowerCase().includes(s)); }
-        const ps = Number(q.get('ps') || 100), page = Number(q.get('p') || 1);
-        return send(200, { paging: { pageIndex: page, pageSize: ps, total: list.length }, components: list.slice((page - 1) * ps, page * ps).map((p) => ({ key: p.key, name: p.name, organization: p.org })) });
-      }
       if (u.pathname === '/api/settings/values') {
         const own = patterns[q.get('component')];
         return send(200, { settings: [{ key: 'sonar.branch.longLivedBranches.regex', value: own ?? '(branch|release)-.*', inherited: own == null }] });

@@ -60,6 +60,22 @@ test('module backends receive their options', async () => {
   assert.deepEqual(await s.get('anything'), { container: 'opspulse', account: 'acct', baseDir: dir });
 });
 
+test('module backends get the shared HTTP client, so proxies and rate limits apply', async () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'ctx.js'), 'module.exports = { createStorage: (o, ctx) => ({ get: async () => [typeof ctx.log.warn, typeof ctx.request], set: async () => {}, delete: async () => {} }) };');
+  const s = createStorage([{ type: 'module', path: './ctx.js' }], { baseDir: dir });
+  assert.deepEqual(await s.get('anything'), ['function', 'function']);
+});
+
+test('simultaneous writes of one document all succeed and leave valid JSON', async () => {
+  const dir = tmp();
+  const { events, log } = recorder();
+  const s = createStorage([{ type: 'file', dir: 'state' }], { baseDir: dir, log });
+  await Promise.all(Array.from({ length: 20 }, (_, i) => s.set('acks', { i, pad: 'x'.repeat((20 - i) * 50) })));
+  assert.deepEqual(events, []);
+  assert.deepEqual(await s.get('acks'), { i: 19, pad: 'x'.repeat(50) }, 'the last write wins');
+});
+
 test('delete removes a document from every backend', async () => {
   const dir = tmp();
   const s = createStorage([{ type: 'file', dir: 'a' }, { type: 'file', dir: 'b' }], { baseDir: dir });

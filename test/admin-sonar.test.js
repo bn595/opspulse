@@ -10,7 +10,7 @@ const PATTERN = 'sonar.branch.longLivedBranches.regex';
 
 // Fake SonarQube Cloud with mutable state. Pages hold `pageSize` projects. `delayMs` keeps POSTs in
 // flight long enough to measure concurrency; `limitOnce` makes the first matching POST return 429.
-async function fakeSonar(t, { projects, branches = {}, patterns = {}, pageSize = 500, delayMs = 0, limitOnce = null, failKeys = [] }) {
+async function fakeSonar(t, { projects, branches = {}, patterns = {}, pageSize = 500, delayMs = 0, limitOnce = null, failKeys = [], omitTotal = false }) {
   const state = { projects: projects.map((p) => ({ ...p })), branches: structuredClone(branches), patterns: { ...patterns }, posts: [], inFlight: 0, maxInFlight: 0, limited: false };
   const server = http.createServer((req, res) => {
     let body = '';
@@ -32,7 +32,7 @@ async function fakeSonar(t, { projects, branches = {}, patterns = {}, pageSize =
           if (keys.length) list = list.filter((p) => keys.includes(p.key));
           const size = Math.min(Number(q.get('pageSize') || 50), pageSize), page = Number(q.get('pageIndex') || 1);
           state.v2PageSizes = [...(state.v2PageSizes || []), Number(q.get('pageSize'))];
-          return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, organizationId: `uuid-${p.org}` })), page: { pageIndex: page, pageSize: size, total: list.length } });
+          return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, organizationId: `uuid-${p.org}` })), page: omitTotal ? { pageIndex: page, pageSize: size } : { pageIndex: page, pageSize: size, total: list.length } });
         }
         if (u.pathname.startsWith('/projects/project-keys/')) {
           const key = decodeURIComponent(u.pathname.slice('/projects/project-keys/'.length));
@@ -120,7 +120,7 @@ test('apply changes only selected actionable rows, reports each with a link, and
   const s = await fakeSonar(t, { projects: [project('acme', 'Acme_old-a', 'a'), project('acme', 'Acme_old-b', 'b'), project('acme', 'Acme_c', 'c')] });
   const { admin, audits } = adminFor(s.url);
   const { rows } = await admin.preview('keys', { org: 'acme', prefix: '' });
-  const done = await admin.apply('keys', rows, { selected: ['Acme_old-a', 'Acme_c'] });
+  const done = await admin.apply('keys', rows, { selected: ['Acme_old-a', 'Acme_c'], run: 'run-1' });
 
   assert.deepEqual(brief(done, 'result', 'url'), [
     ['Acme_old-a', 'done', `${s.url}/project/overview?id=Acme_a`],
@@ -128,7 +128,7 @@ test('apply changes only selected actionable rows, reports each with a link, and
     ['Acme_c', null, `${s.url}/project/overview?id=Acme_c`],
   ]);
   assert.deepEqual(s.state.posts, [['/api/projects/update_key', { from: 'Acme_old-a', to: 'Acme_a' }]]);
-  assert.deepEqual(audits, [{ event: 'sonar.key_updated', actor: 'ann@contoso.com', org: 'acme', project: 'Acme_old-a', from: 'Acme_old-a', to: 'Acme_a', result: 'done' }]);
+  assert.deepEqual(audits, [{ event: 'sonar.key_updated', run: 'run-1', actor: 'ann@contoso.com', org: 'acme', project: 'Acme_old-a', from: 'Acme_old-a', to: 'Acme_a', result: 'done' }]);
 });
 
 test('a failing row is reported and audited without stopping the others', async (t) => {
@@ -167,7 +167,7 @@ test('a rate limit mid-run waits for the block, slows down, and finishes every r
 test('making a branch long-lived sets the pattern before deleting the short-lived branch', async (t) => {
   const s = await fakeSonar(t, {
     projects: [project('acme', 'Acme_a', 'a')],
-    branches: { Acme_a: [{ name: 'main', isMain: true, type: 'LONG' }, { name: 'dev', isMain: false, type: 'SHORT' }] },
+    branches: { Acme_a: [{ name: 'main', isMain: true, type: 'LONG' }, { name: 'dev', isMain: false, type: 'SHORT', analysisDate: '2026-10-01T00:00:00Z' }] },
   });
   const { admin, audits } = adminFor(s.url);
   const { rows } = await admin.preview('longlived', { org: 'acme', keys: ['Acme_a'], pattern: 'main|dev', branch: 'dev' });
@@ -177,6 +177,27 @@ test('making a branch long-lived sets the pattern before deleting the short-live
     ['/api/project_branches/delete', { project: 'Acme_a', branch: 'dev' }],
   ]);
   assert.deepEqual(audits.map((a) => a.event), ['sonar.branch_pattern_set', 'sonar.branch_deleted']);
+  assert.deepEqual([audits[1].type, audits[1].analysisDate], ['SHORT', '2026-10-01T00:00:00Z'], 'what was deleted is on record');
+});
+
+test('a row retried after a rate limit does not repeat steps that already succeeded', async (t) => {
+  const s = await fakeSonar(t, {
+    limitOnce: '/api/project_branches/delete',
+    projects: [project('acme', 'Acme_a', 'a')],
+    branches: { Acme_a: [{ name: 'main', isMain: true, type: 'LONG' }, { name: 'dev', isMain: false, type: 'SHORT' }] },
+  });
+  const { admin, audits } = adminFor(s.url);
+  const { rows } = await admin.preview('longlived', { org: 'acme', keys: ['Acme_a'], pattern: 'main|dev', branch: 'dev' });
+  const done = await admin.apply('longlived', rows, { selected: ['Acme_a'] });
+  assert.equal(done[0].result, 'done');
+  assert.deepEqual(s.state.posts.map(([p]) => p), ['/api/settings/set', '/api/project_branches/delete']);
+  assert.deepEqual(audits.map((a) => a.event), ['sonar.branch_pattern_set', 'sonar.branch_deleted']);
+});
+
+test('project listing continues when the response gives no total', async (t) => {
+  const s = await fakeSonar(t, { pageSize: 2, omitTotal: true, projects: ['a', 'b', 'c', 'd', 'e'].map((k) => project('acme', `Acme_${k}`, `${k}-new`)) });
+  const { rows } = await adminFor(s.url).admin.preview('drift', { org: 'acme' });
+  assert.equal(rows.length, 5);
 });
 
 test('project listing uses Web API v2 with large pages', async (t) => {

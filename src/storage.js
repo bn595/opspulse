@@ -6,16 +6,20 @@
 // A backend stores JSON documents by key:
 //   { name?, async get(key) -> value | null, async set(key, value), async delete(key) }
 // Built-in: { type: 'file', dir }. Custom: { type: 'module', path, ...options }, where the module
-// exports createStorage(options, { log }) returning a backend.
+// exports createStorage(options, { log, request }) returning a backend. `request` is opspulse's HTTP
+// client (proxies, CA, rate limits), using the network.proxies.azure proxy unless given a platform.
 
 const fs = require('fs');
 const path = require('path');
+const http = require('./http');
 
 const KEY = /^[a-z0-9][a-z0-9-]*$/i;
 const CHECK_KEY = 'opspulse-check';
 
 function fileBackend(dir) {
   const fileFor = (key) => path.join(dir, `${key}.json`);
+  const pending = new Map(); // key -> last write, so writes of one document land in order
+  let written = 0;
   return {
     async get(key) {
       try {
@@ -25,12 +29,19 @@ function fileBackend(dir) {
         throw e;
       }
     },
-    async set(key, value) {
-      await fs.promises.mkdir(dir, { recursive: true });
-      // Write then rename, so a crash never leaves a half-written document.
-      const tmp = `${fileFor(key)}.${process.pid}.tmp`;
-      await fs.promises.writeFile(tmp, JSON.stringify(value));
-      await fs.promises.rename(tmp, fileFor(key));
+    set(key, value) {
+      const write = (pending.get(key) || Promise.resolve()).then(async () => {
+        await fs.promises.mkdir(dir, { recursive: true });
+        // Write then rename, so a crash never leaves a half-written document. The temporary name is
+        // unique, so another process writing the same document cannot collide with it.
+        const tmp = `${fileFor(key)}.${process.pid}.${++written}.tmp`;
+        await fs.promises.writeFile(tmp, JSON.stringify(value));
+        await fs.promises.rename(tmp, fileFor(key));
+      });
+      const settled = write.catch(() => {});
+      pending.set(key, settled);
+      settled.then(() => { if (pending.get(key) === settled) pending.delete(key); });
+      return write;
     },
     async delete(key) {
       await fs.promises.rm(fileFor(key), { force: true });
@@ -53,8 +64,9 @@ function openBackend(entry, i, baseDir, log) {
     } catch (e) {
       throw new Error(`${where}: cannot load ${file}: ${e.message}`);
     }
-    if (typeof mod.createStorage !== 'function') throw new Error(`${where}: ${file} must export createStorage(options, { log })`);
-    const impl = mod.createStorage({ ...options, baseDir }, { log });
+    if (typeof mod.createStorage !== 'function') throw new Error(`${where}: ${file} must export createStorage(options, { log, request })`);
+    const request = (url, opts = {}) => http.request(url, { platform: 'azure', ...opts });
+    const impl = mod.createStorage({ ...options, baseDir }, { log, request });
     return { label: impl.name || `module ${rel}`, impl };
   }
   throw new Error(`${where}: unknown type "${entry?.type}" (use file or module)`);

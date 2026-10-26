@@ -258,6 +258,7 @@ function readJson(req, limit = 4096) {
 // are exactly the ones previewed. Previews expire after 30 minutes and can be applied once.
 const PREVIEW_TTL_MS = 30 * 60e3;
 const BRANCH_TOOLS = new Set(['delete', 'longlived']);
+const PATTERN_TOOLS = new Set(['pattern', 'longlived']);
 const previews = new Map(); // id -> { tool, rows, branch, at }
 const runs = new Map(); // id -> { tool, rows, progress, finished, error }
 let demoSonarUrl = null;
@@ -278,8 +279,9 @@ async function sonarAdmin() {
 async function adminPreview(body) {
   for (const [id, p] of previews) if (Date.now() - p.at > PREVIEW_TTL_MS) previews.delete(id);
   const tool = String(body.tool || '');
-  const params = { org: String(body.org || '').trim(), prefix: String(body.prefix || ''), keys: body.keys ? asList(body.keys) : null, pattern: body.pattern, branch: String(body.branch || '').trim() };
+  const params = { org: String(body.org || '').trim(), prefix: String(body.prefix || ''), keys: body.keys ? asList(body.keys) : null, pattern: String(body.pattern ?? ''), branch: String(body.branch || '').trim() };
   if (BRANCH_TOOLS.has(tool) && !params.branch) throw Object.assign(new Error('branch is required'), { status: 400 });
+  if (PATTERN_TOOLS.has(tool) && !params.pattern.trim()) throw Object.assign(new Error('a branch pattern is required'), { status: 400 });
   const { rows } = await (await sonarAdmin()).preview(tool, params);
   const id = crypto.randomUUID();
   previews.set(id, { tool, rows, branch: params.branch, at: Date.now() });
@@ -287,18 +289,20 @@ async function adminPreview(body) {
 }
 
 async function adminApply(body) {
+  // Get the token first, so a failure here leaves the preview usable. Everything after it up to the
+  // delete is synchronous, so a preview can only be applied once.
+  const admin = await sonarAdmin();
   const preview = previews.get(String(body.previewId || ''));
   if (!preview) throw Object.assign(new Error('This preview has expired or was already applied. Run the preview again.'), { status: 400 });
   const confirmed = BRANCH_TOOLS.has(preview.tool) ? body.confirm === preview.branch : body.confirm === true;
   if (!confirmed) throw Object.assign(new Error(BRANCH_TOOLS.has(preview.tool) ? `Type the branch name "${preview.branch}" to confirm.` : 'Confirmation is required.'), { status: 400 });
   previews.delete(String(body.previewId));
-  const admin = await sonarAdmin();
   const selected = asList(body.selected);
   const id = crypto.randomUUID();
   const run = { tool: preview.tool, rows: preview.rows, progress: null, finished: false, error: null };
   runs.set(id, run);
   log.info('admin.run_started', { run: id, tool: preview.tool, actor: actorName(), projects: selected.length });
-  admin.apply(preview.tool, preview.rows, { selected, onProgress: (p) => { run.rows = p.rows; run.progress = { done: p.done, total: p.total, concurrency: p.concurrency, waitingUntil: p.waitingUntil || null }; } })
+  admin.apply(preview.tool, preview.rows, { selected, run: id, onProgress: (p) => { run.rows = p.rows; run.progress = { done: p.done, total: p.total, concurrency: p.concurrency, waitingUntil: p.waitingUntil || null }; } })
     .then((rows) => { run.rows = rows; })
     .catch((e) => { run.error = e.message; log.error('admin.run_failed', { run: id, error: e.message }); })
     .finally(() => { run.finished = true; log.info('admin.run_finished', { run: id, tool: preview.tool, done: run.rows.filter((r) => r.result === 'done').length, failed: run.rows.filter((r) => r.result === 'failed').length }); });
@@ -318,11 +322,11 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (p === '/api/snapshot' && req.method === 'GET') return send(res, 200, snapshot());
-    // Polled by the browser; the full snapshot is fetched only when `revision` or `authKey` changes.
     if (p === '/api/admin/run' && req.method === 'GET') {
       const run = runs.get(url.searchParams.get('id') || '');
       return run ? send(res, 200, run) : send(res, 404, { error: 'unknown run' });
     }
+    // Polled by the browser; the full snapshot is fetched only when `revision` or `authKey` changes.
     if (p === '/api/status' && req.method === 'GET') {
       const a = store.authStatus();
       return send(res, 200, { revision, refreshing: !!refreshing, lastRefreshAt, nextRefreshAt, authKey: [a.signedIn, a.needsLogin, a.device?.userCode, a.error].join('|') });

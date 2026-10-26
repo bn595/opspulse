@@ -177,6 +177,7 @@ function load(configPath) {
   cfg._dir = dir;
   cfg.github.actions.repos = (cfg.github.actions.repos || []).map((r) => (typeof r === 'string' ? { repo: r } : r));
   if (cfg.network.caFile) cfg.network.caFile = path.resolve(dir, cfg.network.caFile);
+  if (!Number.isInteger(cfg.admin.concurrency) || cfg.admin.concurrency < 1) throw new Error(`${file}: admin.concurrency must be a whole number of 1 or more`);
   return cfg;
 }
 

@@ -13,7 +13,7 @@ function deriveKey(key, name) {
   const cut = key.indexOf('_');
   if (cut < 1) return { to: null, status: 'unrecognized' };
   const to = key.slice(0, cut + 1) + name;
-  if (!KEY_CHARS.test(name) || /^\d+$/.test(to)) return { to, status: 'invalid' };
+  if (!KEY_CHARS.test(name)) return { to, status: 'invalid' };
   return { to, status: to === key ? 'unchanged' : 'change' };
 }
 
@@ -27,13 +27,15 @@ function planKeys(projects, { existingKeys = new Set() } = {}) {
 }
 
 // Projects whose key no longer follows their name. Conflicts are checked against every key listed
-// plus `existingKeys` (keys known to be taken elsewhere).
+// plus `existingKeys` (keys known to be taken elsewhere). Keys in another format are listed when the
+// name differs, so they can be followed up by hand.
 function findDrift(projects, { existingKeys = new Set() } = {}) {
   const taken = new Set([...projects.map((p) => p.key), ...existingKeys]);
-  return planKeys(projects, { existingKeys: taken }).filter((r) => r.status !== 'unchanged' && r.status !== 'unrecognized');
+  return planKeys(projects, { existingKeys: taken }).filter((r) => r.status !== 'unchanged' && !(r.status === 'unrecognized' && r.from === r.name));
 }
 
 function compile(pattern) {
+  if (typeof pattern !== 'string' || !pattern.trim()) throw new Error('a branch pattern is required');
   try {
     return new RegExp(`^(?:${pattern})$`);
   } catch (e) {
@@ -72,7 +74,7 @@ function planLongLived(projects, pattern, branch) {
     const setPattern = p.pattern !== pattern;
     const deleteBranch = !!b && !isLongLived(b);
     const status = setPattern || deleteBranch ? 'change' : 'unchanged';
-    return { project: p.key, name: p.name, from: p.pattern, inherited: p.inherited, to: pattern, branch, setPattern, deleteBranch, status, actionable: status === 'change' };
+    return { project: p.key, name: p.name, from: p.pattern, inherited: p.inherited, to: pattern, branch, type: b?.type || null, analysisDate: b?.analysisDate || null, setPattern, deleteBranch, status, actionable: status === 'change' };
   });
 }
 
