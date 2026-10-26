@@ -13,6 +13,8 @@ const { BUILTIN } = require('./sources');
 const DEFAULTS = {
   server: { host: '127.0.0.1', port: 4777, openBrowser: true, refreshMinutes: 10 },
   ui: { panels: [], hide: [] }, // panel ids: feed, kpis, actions, jira, ghas, sonar, or a plugin id
+  logging: { format: 'auto', file: '' }, // auto | json | pretty; optional file also receives JSON lines
+  admin: { concurrency: 5 },
   network: {
     // Proxy URL per platform; empty means direct. Accepts secret references.
     proxies: { github: '', sonar: '', jira: '', azure: '' },

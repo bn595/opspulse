@@ -17,6 +17,7 @@ const { createAcks } = require('./acks');
 const { loadPlugins, runPlugin, createContext, platformsUsed, pluginKey, pluginIdOf } = require('./plugins');
 const { planRefresh } = require('./schedule');
 const { BUILTIN, publicSources } = require('./sources');
+const { log, configureLog } = require('./log');
 
 const ROOT = path.resolve(__dirname, '..');
 const PUBLIC = path.join(ROOT, 'public');
@@ -40,7 +41,7 @@ Usage: node src/server.js [options]
 const DEMO = flag('--demo');
 const CONFIG_PATH = path.resolve(opt('--config') || process.env.OPSPULSE_CONFIG || path.join(ROOT, 'config.json'));
 
-process.on('unhandledRejection', (e) => console.error('  unhandled:', e?.stack || e));
+process.on('unhandledRejection', (e) => log.error('process.unhandled_rejection', { error: e?.stack || String(e) }));
 
 let cfg, configMtime = 0;
 let store;
@@ -55,16 +56,17 @@ function applyNetwork(proxies) { net.configure({ ...cfg.network, proxies }); }
 
 function loadConfig() {
   cfg = config.load(CONFIG_PATH);
+  configureLog({ format: cfg.logging.format, file: cfg.logging.file ? path.resolve(cfg._dir, cfg.logging.file) : null });
   if (DEMO) {
     cfg.jira.statusRules = [{ status: 'Blocked', olderThanDays: 3, level: 'warn' }, { status: 'Triage', olderThanHours: 48, level: 'warn' }];
     cfg.jira.staleDays = 7;
   }
   try { configMtime = fs.statSync(cfg._file).mtimeMs; } catch { configMtime = 0; }
   if (store) store.reconfigure(cfg);
-  else store = new SecretStore(cfg, { applyNetwork, onSignedIn: () => { console.log(`  signed in to Azure as ${store.azure.user || 'unknown user'}`); refresh(true); } });
+  else store = new SecretStore(cfg, { applyNetwork, onSignedIn: () => { log.info('azure.signed_in', { user: store.azure.user || 'unknown' }); refresh(true); } });
   applyNetwork({});
   plugins = loadPlugins(DEMO ? [{ path: EXAMPLE_PLUGIN, failureWarn: 5 }] : cfg.plugins, cfg._dir);
-  for (const p of plugins) if (p.error) console.warn(`  [plugin ${p.id}] ${p.error}`);
+  for (const p of plugins) if (p.error) log.warn('plugin.load_failed', { plugin: p.id, error: p.error });
   const configured = new Set(plugins.map((p) => pluginKey(p.id)));
   for (const k of Object.keys(sources)) if (pluginIdOf(k) && !configured.has(k)) delete sources[k];
   for (const p of plugins) sources[pluginKey(p.id)] = newSource({ ...sources[pluginKey(p.id)], title: p.title });
@@ -92,7 +94,7 @@ function saveCache() {
   try {
     fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
     fs.writeFileSync(CACHE_FILE, JSON.stringify({ lastRefreshAt, sources }));
-  } catch (e) { console.warn('  could not write cache:', e.message); }
+  } catch (e) { log.warn('cache.write_failed', { error: e.message }); }
 }
 
 // Minutes between refreshes per source. Plugins use their `refreshMinutes` option.
@@ -116,7 +118,7 @@ async function runSource(key, collect, extra = {}) {
     // Keep the last successful data and mark it stale.
     const retryAt = e.retryAt ? new Date(e.retryAt).toISOString() : null;
     setSource(key, { ...sources[key], ...extra, status: retryAt ? 'rate-limited' : 'error', error: e.message, errorAt: new Date().toISOString(), retryAt });
-    console.warn(`  [${key}] ${e.message}`);
+    log.warn(retryAt ? 'source.rate_limited' : 'source.refresh_failed', { source: key, error: e.message, ...(retryAt ? { retryAt } : {}) });
   }
 }
 
@@ -131,7 +133,7 @@ async function refresh(force = false) {
   refreshing = (async () => {
     try {
       const m = fs.statSync(cfg._file).mtimeMs;
-      if (m !== configMtime) { loadConfig(); revision++; console.log('  config changed, reloaded'); }
+      if (m !== configMtime) { loadConfig(); revision++; log.info('config.reloaded', { file: cfg._file }); }
     } catch { /* config may not exist in demo mode */ }
 
     for (const k of Object.keys(BUILTIN)) if (!enabled(k) && sources[k].status !== 'disabled') setSource(k, newSource({ status: 'disabled' }));
@@ -144,7 +146,7 @@ async function refresh(force = false) {
       secrets = r.values;
       if (JSON.stringify(r.errors) !== JSON.stringify(secretErrors)) revision++;
       secretErrors = r.errors;
-      for (const e of r.errors) console.warn(`  [secrets] ${e}`);
+      for (const e of r.errors) log.warn('secret.unavailable', { error: e });
     }
 
     const demoData = DEMO ? demo.generate() : null;
@@ -314,23 +316,26 @@ function listen(port, tries = 10) {
   PORT = port;
   server.once('error', (e) => {
     if (e.code === 'EADDRINUSE' && tries > 0) return listen(port + 1, tries - 1);
-    console.error(e.message);
+    log.error('server.listen_failed', { error: e.message });
     process.exit(1);
   });
   server.listen(port, cfg.server.host, () => {
     const u = `http://localhost:${port}`;
-    console.log(`\n  opspulse ${VERSION}${DEMO ? '  (demo data)' : ''}`);
-    console.log(`  config : ${cfg._exists ? cfg._file : `${cfg._file} (not found — using defaults)`}`);
-    if (!DEMO && store.usesVault()) console.log(`  secrets: Azure Key Vault ${store.authStatus().vault} (auth: ${cfg.secrets.azureKeyVault.auth})`);
     const px = Object.entries(cfg.network.proxies).filter(([, v]) => v).map(([k]) => k);
-    if (px.length) console.log(`  proxy  : ${px.join(', ')}`);
-    console.log(`  open   : ${u}\n`);
+    log.info('server.started', {
+      version: VERSION,
+      url: u,
+      config: cfg._exists ? cfg._file : `${cfg._file} (not found, using defaults)`,
+      ...(DEMO ? { demo: true } : {}),
+      ...(!DEMO && store.usesVault() ? { keyVault: store.authStatus().vault, auth: cfg.secrets.azureKeyVault.auth } : {}),
+      ...(px.length ? { proxies: px.join(',') } : {}),
+    });
     if (cfg.server.openBrowser && !flag('--no-open')) openBrowser(u);
   });
 }
 
 if (cfg.server.host !== '127.0.0.1' && cfg.server.host !== 'localhost' && cfg.server.host !== '::1') {
-  console.warn('  WARNING: server.host is not loopback. This dashboard has no login; keep it on 127.0.0.1.');
+  log.warn('server.host_not_loopback', { host: cfg.server.host, note: 'This dashboard has no login; keep it on 127.0.0.1.' });
 }
 listen(Number(opt('--port')) || cfg.server.port);
 refresh();
