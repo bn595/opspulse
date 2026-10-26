@@ -19,6 +19,10 @@ const { loadPlugins, runPlugin, createContext, platformsUsed, pluginKey, pluginI
 const { planRefresh } = require('./schedule');
 const { BUILTIN, publicSources } = require('./sources');
 const { log, configureLog } = require('./log');
+const { createSonarAdmin } = require('./admin/sonar');
+const { startDemoSonar } = require('./demo-sonar');
+const os = require('os');
+const crypto = require('crypto');
 
 const ROOT = path.resolve(__dirname, '..');
 const PUBLIC = path.join(ROOT, 'public');
@@ -250,6 +254,56 @@ function readJson(req, limit = 4096) {
   });
 }
 
+// SonarQube Cloud admin tools. A preview is kept on the server and applied by id, so the changes made
+// are exactly the ones previewed. Previews expire after 30 minutes and can be applied once.
+const PREVIEW_TTL_MS = 30 * 60e3;
+const BRANCH_TOOLS = new Set(['delete', 'longlived']);
+const previews = new Map(); // id -> { tool, rows, branch, at }
+const runs = new Map(); // id -> { tool, rows, progress, finished, error }
+let demoSonarUrl = null;
+
+const actorName = () => store.authStatus().user || os.userInfo().username;
+const asList = (v) => (Array.isArray(v) ? v : String(v || '').split(/[\s,]+/)).map((s) => String(s).trim()).filter(Boolean);
+
+async function sonarAdmin() {
+  let token = 'demo';
+  if (!DEMO) {
+    token = (await store.resolve()).values.sonar;
+    if (!token) throw Object.assign(new Error('No SonarQube Cloud token is available (sonar.token)'), { status: 400 });
+  }
+  return createSonarAdmin({ sonarUrl: DEMO ? demoSonarUrl : cfg.sonar.url, token, actor: actorName(), log, concurrency: cfg.admin.concurrency });
+}
+
+async function adminPreview(body) {
+  for (const [id, p] of previews) if (Date.now() - p.at > PREVIEW_TTL_MS) previews.delete(id);
+  const tool = String(body.tool || '');
+  const params = { org: String(body.org || '').trim(), prefix: String(body.prefix || ''), keys: body.keys ? asList(body.keys) : null, pattern: body.pattern, branch: String(body.branch || '').trim() };
+  if (BRANCH_TOOLS.has(tool) && !params.branch) throw Object.assign(new Error('branch is required'), { status: 400 });
+  const { rows } = await (await sonarAdmin()).preview(tool, params);
+  const id = crypto.randomUUID();
+  previews.set(id, { tool, rows, branch: params.branch, at: Date.now() });
+  return { id, rows };
+}
+
+async function adminApply(body) {
+  const preview = previews.get(String(body.previewId || ''));
+  if (!preview) throw Object.assign(new Error('This preview has expired or was already applied. Run the preview again.'), { status: 400 });
+  const confirmed = BRANCH_TOOLS.has(preview.tool) ? body.confirm === preview.branch : body.confirm === true;
+  if (!confirmed) throw Object.assign(new Error(BRANCH_TOOLS.has(preview.tool) ? `Type the branch name "${preview.branch}" to confirm.` : 'Confirmation is required.'), { status: 400 });
+  previews.delete(String(body.previewId));
+  const admin = await sonarAdmin();
+  const selected = asList(body.selected);
+  const id = crypto.randomUUID();
+  const run = { tool: preview.tool, rows: preview.rows, progress: null, finished: false, error: null };
+  runs.set(id, run);
+  log.info('admin.run_started', { run: id, tool: preview.tool, actor: actorName(), projects: selected.length });
+  admin.apply(preview.tool, preview.rows, { selected, onProgress: (p) => { run.rows = p.rows; run.progress = { done: p.done, total: p.total, concurrency: p.concurrency, waitingUntil: p.waitingUntil || null }; } })
+    .then((rows) => { run.rows = rows; })
+    .catch((e) => { run.error = e.message; log.error('admin.run_failed', { run: id, error: e.message }); })
+    .finally(() => { run.finished = true; log.info('admin.run_finished', { run: id, tool: preview.tool, done: run.rows.filter((r) => r.result === 'done').length, failed: run.rows.filter((r) => r.result === 'failed').length }); });
+  return { runId: id };
+}
+
 const FEED_ACTIONS = {
   '/api/feed/ack': (b) => acks.acknowledge(b),
   '/api/feed/snooze': (b) => acks.snooze(b, 24),
@@ -264,6 +318,10 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === '/api/snapshot' && req.method === 'GET') return send(res, 200, snapshot());
     // Polled by the browser; the full snapshot is fetched only when `revision` or `authKey` changes.
+    if (p === '/api/admin/run' && req.method === 'GET') {
+      const run = runs.get(url.searchParams.get('id') || '');
+      return run ? send(res, 200, run) : send(res, 404, { error: 'unknown run' });
+    }
     if (p === '/api/status' && req.method === 'GET') {
       const a = store.authStatus();
       return send(res, 200, { revision, refreshing: !!refreshing, lastRefreshAt, nextRefreshAt, authKey: [a.signedIn, a.needsLogin, a.device?.userCode, a.error].join('|') });
@@ -275,6 +333,14 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/refresh') { refresh(true); return send(res, 202, { ok: true }); }
       if (p === '/api/auth/device') { const d = await store.startDeviceLogin(); return send(res, 200, { userCode: d.userCode, verificationUri: d.verificationUri, message: d.message, expiresAt: d.expiresAt }); }
       if (p === '/api/auth/signout') { store.signOut(); return send(res, 200, { ok: true }); }
+      if (p === '/api/admin/preview' || p === '/api/admin/apply') {
+        const body = await readJson(req, 2e6);
+        try {
+          return send(res, 200, await (p === '/api/admin/preview' ? adminPreview(body) : adminApply(body)));
+        } catch (e) {
+          return send(res, e.retryAt ? 429 : e.status || 502, { error: e.message });
+        }
+      }
       if (FEED_ACTIONS[p]) {
         const body = await readJson(req);
         let stored;
@@ -342,6 +408,7 @@ if (cfg.server.host !== '127.0.0.1' && cfg.server.host !== 'localhost' && cfg.se
 }
 (async () => {
   await Promise.all([loadCache(), acks.load()]);
+  if (DEMO) demoSonarUrl = await startDemoSonar();
   listen(Number(opt('--port')) || cfg.server.port);
   refresh();
   setInterval(() => refresh(), 60e3); // each source refreshes on its own interval
