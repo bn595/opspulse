@@ -26,9 +26,11 @@ function planKeys(projects, { existingKeys = new Set() } = {}) {
   return rows.map((r) => ({ ...r, actionable: r.status === 'change' }));
 }
 
-// Projects whose key no longer follows their name, with conflicts checked against every key listed.
-function findDrift(projects) {
-  return planKeys(projects, { existingKeys: new Set(projects.map((p) => p.key)) }).filter((r) => r.status !== 'unchanged' && r.status !== 'unrecognized');
+// Projects whose key no longer follows their name. Conflicts are checked against every key listed
+// plus `existingKeys` (keys known to be taken elsewhere).
+function findDrift(projects, { existingKeys = new Set() } = {}) {
+  const taken = new Set([...projects.map((p) => p.key), ...existingKeys]);
+  return planKeys(projects, { existingKeys: taken }).filter((r) => r.status !== 'unchanged' && r.status !== 'unrecognized');
 }
 
 function compile(pattern) {

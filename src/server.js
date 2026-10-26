@@ -271,7 +271,8 @@ async function sonarAdmin() {
     token = (await store.resolve()).values.sonar;
     if (!token) throw Object.assign(new Error('No SonarQube Cloud token is available (sonar.token)'), { status: 400 });
   }
-  return createSonarAdmin({ sonarUrl: DEMO ? demoSonarUrl : cfg.sonar.url, token, actor: actorName(), log, concurrency: cfg.admin.concurrency });
+  const urls = DEMO ? { sonarUrl: demoSonarUrl, apiUrl: demoSonarUrl } : { sonarUrl: cfg.sonar.url, ...(cfg.sonar.apiUrl ? { apiUrl: cfg.sonar.apiUrl } : {}) };
+  return createSonarAdmin({ ...urls, token, actor: actorName(), log, concurrency: cfg.admin.concurrency });
 }
 
 async function adminPreview(body) {

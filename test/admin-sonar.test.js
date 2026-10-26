@@ -20,12 +20,23 @@ async function fakeSonar(t, { projects, branches = {}, patterns = {}, pageSize =
       const q = req.method === 'POST' ? new URLSearchParams(body) : u.searchParams;
       const send = (status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
       if (req.method === 'GET') {
-        if (u.pathname === '/api/projects/search') {
-          let list = state.projects.filter((p) => p.org === q.get('organization'));
-          if (q.get('projects')) { const keys = q.get('projects').split(','); list = list.filter((p) => keys.includes(p.key)); }
-          if (q.get('q')) list = list.filter((p) => p.name.toLowerCase().includes(q.get('q').toLowerCase()) || p.key.toLowerCase().includes(q.get('q').toLowerCase()));
-          const ps = Math.min(Number(q.get('ps') || 100), pageSize), page = Number(q.get('p') || 1);
-          return send(200, { paging: { pageIndex: page, pageSize: ps, total: list.length }, components: list.slice((page - 1) * ps, page * ps).map((p) => ({ key: p.key, name: p.name, organization: p.org })) });
+        // Web API v2 reads. v1 project search is deliberately absent: the admin tools must not use it.
+        if (u.pathname === '/organizations/organizations') {
+          const key = q.get('organizationKey');
+          return send(200, state.projects.some((p) => p.org === key) ? [{ key, id: `legacy-${key}`, uuidV4: `uuid-${key}` }] : []);
+        }
+        if (u.pathname === '/projects/projects') {
+          const orgs = q.getAll('organizationIds').map((id) => id.replace(/^uuid-/, ''));
+          const keys = q.getAll('keys');
+          let list = state.projects.filter((p) => !orgs.length || orgs.includes(p.org));
+          if (keys.length) list = list.filter((p) => keys.includes(p.key));
+          const size = Math.min(Number(q.get('pageSize') || 50), pageSize), page = Number(q.get('pageIndex') || 1);
+          state.v2PageSizes = [...(state.v2PageSizes || []), Number(q.get('pageSize'))];
+          return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, organizationId: `uuid-${p.org}` })), page: { pageIndex: page, pageSize: size, total: list.length } });
+        }
+        if (u.pathname.startsWith('/projects/project-keys/')) {
+          const key = decodeURIComponent(u.pathname.slice('/projects/project-keys/'.length));
+          return state.projects.some((p) => p.key === key) ? send(200, { key }) : send(404, { message: 'Not Found' });
         }
         if (u.pathname === '/api/settings/values') {
           const own = state.patterns[q.get('component')];
@@ -60,7 +71,7 @@ function adminFor(url, extra = {}) {
   const clock = { now: T0 };
   net.configure({ timeoutSeconds: 5, now: () => clock.now });
   const admin = createSonarAdmin({
-    sonarUrl: url, token: 'tok', actor: 'ann@contoso.com', concurrency: 5, platform: `sonar-admin-${++platforms}`,
+    sonarUrl: url, apiUrl: url, token: 'tok', actor: 'ann@contoso.com', concurrency: 5, platform: `sonar-admin-${++platforms}`,
     log: { audit: (event, fields) => audits.push({ event, ...fields }), info() {}, warn() {}, error() {} },
     now: () => clock.now, wait: async (ms) => { clock.now += ms; },
     ...extra,
@@ -166,4 +177,21 @@ test('making a branch long-lived sets the pattern before deleting the short-live
     ['/api/project_branches/delete', { project: 'Acme_a', branch: 'dev' }],
   ]);
   assert.deepEqual(audits.map((a) => a.event), ['sonar.branch_pattern_set', 'sonar.branch_deleted']);
+});
+
+test('project listing uses Web API v2 with large pages', async (t) => {
+  const s = await fakeSonar(t, { projects: [project('acme', 'Acme_a', 'a'), project('acme', 'Acme_b', 'b')] });
+  await adminFor(s.url).admin.preview('drift', { org: 'acme' });
+  assert.deepEqual(s.state.v2PageSizes, [5000]);
+});
+
+test('a target key taken in another organization is a conflict', async (t) => {
+  const s = await fakeSonar(t, { projects: [project('acme', 'Acme_old', 'shared'), project('labs', 'Acme_shared', 'other')] });
+  const { rows } = await adminFor(s.url).admin.preview('keys', { org: 'acme', prefix: '' });
+  assert.deepEqual(brief(rows, 'to', 'status'), [['Acme_old', 'Acme_shared', 'conflict']]);
+});
+
+test('an unknown organization is reported clearly', async (t) => {
+  const s = await fakeSonar(t, { projects: [project('acme', 'Acme_a', 'a')] });
+  await assert.rejects(adminFor(s.url).admin.preview('drift', { org: 'nope' }), /organization "nope" was not found or is not visible to this token/);
 });

@@ -32,6 +32,23 @@ function startDemoSonar() {
       const q = req.method === 'POST' ? new URLSearchParams(body) : u.searchParams;
       const send = (status, data) => setTimeout(() => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(data === '' ? '' : JSON.stringify(data)); }, req.method === 'POST' ? 250 : 30);
       const find = (key) => projects.find((p) => p.key === key);
+      // Web API v2 reads used by the admin tools.
+      if (u.pathname === '/organizations/organizations') {
+        const key = q.get('organizationKey');
+        return send(200, projects.some((p) => p.org === key) ? [{ key, id: `demo-${key}`, uuidV4: `uuid-${key}` }] : []);
+      }
+      if (u.pathname === '/projects/projects') {
+        const orgs = q.getAll('organizationIds').map((id) => id.replace(/^uuid-/, ''));
+        const keys = q.getAll('keys');
+        let list = projects.filter((p) => !orgs.length || orgs.includes(p.org));
+        if (keys.length) list = list.filter((p) => keys.includes(p.key));
+        const size = Number(q.get('pageSize') || 50), page = Number(q.get('pageIndex') || 1);
+        return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, organizationId: `uuid-${p.org}` })), page: { pageIndex: page, pageSize: size, total: list.length } });
+      }
+      if (u.pathname.startsWith('/projects/project-keys/')) {
+        const key = decodeURIComponent(u.pathname.slice('/projects/project-keys/'.length));
+        return find(key) ? send(200, { key }) : send(404, { message: 'Not Found' });
+      }
       if (u.pathname === '/api/projects/search') {
         let list = projects.filter((p) => p.org === q.get('organization'));
         if (q.get('projects')) { const keys = q.get('projects').split(','); list = list.filter((p) => keys.includes(p.key)); }

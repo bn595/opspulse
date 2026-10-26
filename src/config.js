@@ -69,6 +69,7 @@ const DEFAULTS = {
     enabled: true,
     refreshMinutes: 60,
     url: 'https://sonarqube.us', // EU region: https://sonarcloud.io
+    apiUrl: '', // Web API v2 host; empty = derived from url (https://api.sonarqube.us)
     token: 'env:OPSPULSE_SONAR_TOKEN',
     organizations: [],
     staleDays: 30,
