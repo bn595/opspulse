@@ -216,8 +216,10 @@ function clearFilters(panel) {
   filtersChanged(panel);
 }
 
+let dashboardHash = ''; // restored when switching back from the admin view
 function writeHash() {
-  history.replaceState(null, '', '#' + OpsView.encodeState({ win: ui.win, ghasWin: ui.ghasWin, filters: ui.filters, queries: ui.queries, focus: ui.focus }));
+  dashboardHash = '#' + OpsView.encodeState({ win: ui.win, ghasWin: ui.ghasWin, filters: ui.filters, queries: ui.queries, focus: ui.focus });
+  history.replaceState(null, '', dashboardHash);
 }
 function readHash() {
   const st = OpsView.decodeState(location.hash);
@@ -317,7 +319,22 @@ document.addEventListener('input', (e) => {
   ui.queries[panel] = e.target.value;
   filtersChanged(panel);
 });
-addEventListener('hashchange', () => { readHash(); renderAll(); });
+// Views: #/admin shows the admin tools; any other hash is the dashboard and its view state.
+function route() {
+  const admin = location.hash.startsWith('#/admin');
+  $('#view-dashboard').hidden = admin;
+  $('#view-admin').hidden = !admin;
+  document.querySelectorAll('.sidenav a').forEach((a) => a.setAttribute('aria-current', a.dataset.view === (admin ? 'admin' : 'dashboard') ? 'page' : 'false'));
+  if (admin) Admin.show();
+  return admin;
+}
+document.querySelector('.sidenav').addEventListener('click', (e) => {
+  const a = e.target.closest('a[data-view]');
+  if (!a || a.dataset.view !== 'dashboard') return;
+  e.preventDefault();
+  location.hash = dashboardHash || '#';
+});
+addEventListener('hashchange', () => { if (!route()) { readHash(); renderAll(); } });
 
 /* ---------- shell ---------- */
 function sourceState(key) {
@@ -503,7 +520,7 @@ document.addEventListener('click', (e) => {
 
 // Panel order and visibility from config `ui`; uses CSS order so panels are not re-rendered.
 function applyLayout() {
-  const secs = [...document.querySelectorAll('main > [data-panel-id]')];
+  const secs = [...document.querySelectorAll('#view-dashboard > [data-panel-id]')];
   const order = OpsView.panelOrder(secs.map((s) => s.dataset.panelId), snap.config.ui);
   for (const s of secs) {
     const i = order.indexOf(s.dataset.panelId);
@@ -844,7 +861,7 @@ function pluginSection(id) {
     sec.className = 'card plugin';
     sec.dataset.panelId = id;
     sec.innerHTML = '<div class="section-head"><h2></h2><span class="tag">Plugin</span></div><div class="plugin-body"></div>';
-    $('main').insertBefore(sec, $('#footer'));
+    $('#view-dashboard').insertBefore(sec, $('#footer'));
   }
   return sec;
 }
@@ -960,5 +977,8 @@ $('#theme').onclick = () => {
 let rt;
 addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(renderAll, 150); });
 
-readHash();
-poll();
+// After every script has loaded (admin.js comes after this file), so a #/admin link works directly.
+addEventListener('DOMContentLoaded', () => {
+  if (!route()) readHash();
+  poll();
+});

@@ -187,6 +187,7 @@ function publicView(cfg, secretStatus) {
     configExists: cfg._exists,
     refreshMinutes: cfg.server.refreshMinutes,
     ui: cfg.ui,
+    admin: { concurrency: cfg.admin.concurrency },
     network: { proxies: secretStatus.proxyHosts || {}, caFile: !!cfg.network.caFile },
     actions: { enabled: cfg.github.actions.enabled, repos: cfg.github.actions.repos.map((r) => r.repo), lookbackHours: cfg.github.actions.lookbackHours, feedWindowHours: cfg.github.actions.feedWindowHours, tokenSet: s.github === 'ok' },
     dismissals: { enabled: cfg.github.dismissals.enabled, orgs: cfg.github.dismissals.orgs, lookbackDays: cfg.github.dismissals.lookbackDays, tokenSet: s.github === 'ok' },
