@@ -14,6 +14,7 @@ const feed = require('./feed');
 const demo = require('./demo');
 const { SecretStore } = require('./secrets');
 const { createAcks } = require('./acks');
+const { createStorage } = require('./storage');
 const { loadPlugins, runPlugin, createContext, platformsUsed, pluginKey, pluginIdOf } = require('./plugins');
 const { planRefresh } = require('./schedule');
 const { BUILTIN, publicSources } = require('./sources');
@@ -76,25 +77,25 @@ loadConfig();
 const setting = (key, name) => BUILTIN[key].section(cfg)[name];
 const enabled = (key) => setting(key, 'enabled');
 
-const CACHE_FILE = path.join(cfg._dir, '.cache', DEMO ? 'demo.json' : 'snapshot.json');
-const acks = createAcks({ file: path.join(cfg._dir, '.cache', DEMO ? 'demo-acks.json' : 'acks.json') });
+// State that outlives a restart goes through the configured storage backends (read at startup).
+const storage = createStorage(cfg.storage.backends, { baseDir: cfg._dir, log });
+const SNAPSHOT_KEY = DEMO ? 'demo-snapshot' : 'snapshot';
+const acks = createAcks({ storage, key: DEMO ? 'demo-acks' : 'acks' });
 let refreshing = null;
 let lastRefreshAt = null;
 let nextRefreshAt = null;
 let secretErrors = [];
 
-try {
-  const cached = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+async function loadCache() {
+  const cached = await storage.get(SNAPSHOT_KEY);
+  if (!cached) return;
   for (const k of Object.keys(sources)) if (cached.sources?.[k]?.data) sources[k] = { ...cached.sources[k], status: 'cached' };
   lastRefreshAt = cached.lastRefreshAt || null;
-} catch { /* no cache yet */ }
+}
 
+// Fetched data only; never tokens or secret values. Storage failures are logged by the storage layer.
 function saveCache() {
-  // Fetched data only; never tokens or secret values.
-  try {
-    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
-    fs.writeFileSync(CACHE_FILE, JSON.stringify({ lastRefreshAt, sources }));
-  } catch (e) { log.warn('cache.write_failed', { error: e.message }); }
+  storage.set(SNAPSHOT_KEY, { lastRefreshAt, sources });
 }
 
 // Minutes between refreshes per source. Plugins use their `refreshMinutes` option.
@@ -276,7 +277,9 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/auth/signout') { store.signOut(); return send(res, 200, { ok: true }); }
       if (FEED_ACTIONS[p]) {
         const body = await readJson(req);
-        try { FEED_ACTIONS[p](body); } catch (e) { return send(res, 400, { error: e.message }); }
+        let stored;
+        try { stored = FEED_ACTIONS[p](body); } catch (e) { return send(res, 400, { error: e.message }); }
+        await stored;
         revision++;
         return send(res, 200, { ok: true });
       }
@@ -337,6 +340,9 @@ function listen(port, tries = 10) {
 if (cfg.server.host !== '127.0.0.1' && cfg.server.host !== 'localhost' && cfg.server.host !== '::1') {
   log.warn('server.host_not_loopback', { host: cfg.server.host, note: 'This dashboard has no login; keep it on 127.0.0.1.' });
 }
-listen(Number(opt('--port')) || cfg.server.port);
-refresh();
-setInterval(() => refresh(), 60e3); // each source refreshes on its own interval
+(async () => {
+  await Promise.all([loadCache(), acks.load()]);
+  listen(Number(opt('--port')) || cfg.server.port);
+  refresh();
+  setInterval(() => refresh(), 60e3); // each source refreshes on its own interval
+})();

@@ -9,6 +9,7 @@ const config = require('../src/config');
 const net = require('../src/http');
 const { SecretStore } = require('../src/secrets');
 const { BUILTIN } = require('../src/sources');
+const { createStorage } = require('../src/storage');
 
 const i = process.argv.indexOf('--config');
 const file = path.resolve(i > 0 ? process.argv[i + 1] : process.env.OPSPULSE_CONFIG || path.join(__dirname, '..', 'config.json'));
@@ -44,6 +45,16 @@ const summarize = {
   }
   for (const [k, st] of Object.entries(store.status)) if (!k.startsWith('proxy.') && st !== 'unset') console.log(`${st === 'ok' ? '✓' : '✗'} secret ${k}: ${st}`);
   for (const e of r.errors) { bad++; console.log(`  ! ${e}`); }
+  console.log('');
+
+  try {
+    const results = await createStorage(cfg.storage.backends, { baseDir: cfg._dir }).check();
+    if (!results.length) console.log('- storage: none configured (state is kept in memory only)');
+    for (const s of results) { if (!s.ok) bad++; console.log(`${s.ok ? '✓' : '✗'} storage ${s.backend}${s.ok ? '' : `: ${s.error}`}`); }
+  } catch (e) {
+    bad++;
+    console.log(`✗ storage: ${e.message}`);
+  }
   console.log('');
 
   for (const [k, source] of Object.entries(BUILTIN)) {

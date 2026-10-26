@@ -15,6 +15,8 @@ const DEFAULTS = {
   ui: { panels: [], hide: [] }, // panel ids: feed, kpis, actions, jira, ghas, sonar, or a plugin id
   logging: { format: 'auto', file: '' }, // auto | json | pretty; optional file also receives JSON lines
   admin: { concurrency: 5 },
+  // Where state is kept between restarts. [] keeps nothing; several backends are all written to.
+  storage: { backends: [{ type: 'file', dir: '.cache' }] },
   network: {
     // Proxy URL per platform; empty means direct. Accepts secret references.
     proxies: { github: '', sonar: '', jira: '', azure: '' },

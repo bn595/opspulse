@@ -1,30 +1,22 @@
 'use strict';
 // Acknowledged and snoozed feed items. An entry applies only while the item's title is unchanged,
-// so "3 failures" acknowledged resurfaces as "5 failures". Optionally persisted to a JSON file.
-// Acknowledging an id again replaces its entry, so the file holds at most one entry per item id.
+// so "3 failures" acknowledged resurfaces as "5 failures". Acknowledging an id again replaces its
+// entry, so at most one entry is kept per item id. Persisted through a storage backend, if given.
 
-const fs = require('fs');
-const path = require('path');
-
-function createAcks({ file = null, now = Date.now } = {}) {
+function createAcks({ storage = null, key = 'acks', now = Date.now } = {}) {
   const entries = new Map(); // id -> { title, until }
-  if (file) {
-    try {
-      for (const [id, e] of Object.entries(JSON.parse(fs.readFileSync(file, 'utf8')))) entries.set(id, e);
-    } catch { /* missing or unreadable: start empty */ }
-  }
 
+  // Drops expired snoozes and persists. Resolves once stored.
   function save() {
     for (const [id, e] of entries) if (e.until != null && e.until <= now()) entries.delete(id);
-    if (!file) return;
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(Object.fromEntries(entries)));
+    return storage ? storage.set(key, Object.fromEntries(entries)) : Promise.resolve();
   }
 
+  // Validates and records synchronously; the returned promise resolves once stored.
   function record(item, until) {
     if (!item || typeof item.id !== 'string' || typeof item.title !== 'string' || !item.id || !item.title) throw new Error('id and title are required');
     entries.set(item.id, { title: item.title, until });
-    save();
+    return save();
   }
 
   function mutedState(i) {
@@ -35,15 +27,20 @@ function createAcks({ file = null, now = Date.now } = {}) {
   }
 
   return {
+    // Loads stored entries; call once before use.
+    async load() {
+      const stored = storage ? await storage.get(key) : null;
+      for (const [id, e] of Object.entries(stored || {})) entries.set(id, e);
+    },
     acknowledge(item) {
-      record(item, null);
+      return record(item, null);
     },
     snooze(item, hours) {
       if (typeof hours !== 'number' || !(hours >= 1 && hours <= 720)) throw new Error('hours must be between 1 and 720');
-      record(item, now() + hours * 3600e3);
+      return record(item, now() + hours * 3600e3);
     },
     restore(id) {
-      if (entries.delete(id)) save();
+      return entries.delete(id) ? save() : Promise.resolve();
     },
     annotate(items) {
       return items.map((i) => {

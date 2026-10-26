@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createAcks } = require('../src/acks');
+const { createStorage } = require('../src/storage');
 
 const item = (title) => ({ id: 'jira-stale', level: 'warn', title });
 
@@ -39,10 +40,12 @@ test('restore unmutes an item', () => {
   assert.equal(acks.annotate([item('Sync groups is failing')])[0].muted, undefined);
 });
 
-test('acknowledgements survive a restart', () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'opspulse-acks-')), 'acks.json');
-  createAcks({ file }).acknowledge(item('Sync groups is failing'));
-  assert.deepEqual(createAcks({ file }).annotate([item('Sync groups is failing')])[0].muted, { kind: 'acknowledged' });
+test('acknowledgements survive a restart through the storage backend', async () => {
+  const storage = createStorage([{ type: 'file', dir: 'state' }], { baseDir: fs.mkdtempSync(path.join(os.tmpdir(), 'opspulse-acks-')) });
+  await createAcks({ storage }).acknowledge(item('Sync groups is failing'));
+  const restarted = createAcks({ storage });
+  await restarted.load();
+  assert.deepEqual(restarted.annotate([item('Sync groups is failing')])[0].muted, { kind: 'acknowledged' });
 });
 
 test('invalid requests are rejected', () => {
