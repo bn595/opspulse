@@ -160,14 +160,13 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
 
   // Performs one row; each step is audited. Throws RateLimitError so the queue can retry the row;
   // steps that already succeeded are skipped on the retry.
-  async function applyRow(tool, row, run) {
+  async function applyRow(tool, row, { run, stepsDone }) {
     const audit = (event, fields, result, error) => log.audit(event, { ...(run ? { run } : {}), actor, org: row.org, project: row.project, ...fields, result, ...(error ? { error } : {}) });
-    row.stepsDone = row.stepsDone || [];
     const step = async (event, fields, call) => {
-      if (row.stepsDone.includes(event)) return;
+      if (stepsDone.has(event)) return;
       try {
         await call();
-        row.stepsDone.push(event);
+        stepsDone.add(event);
         audit(event, fields, 'done');
       } catch (e) {
         if (e instanceof RateLimitError) throw e;
@@ -205,12 +204,13 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     const out = rows.map((r) => ({ ...r }));
     const todo = out.filter((r) => r.actionable && chosen.has(r.project));
     for (const r of todo) r.result = 'queued';
+    const stepsDone = new Map(todo.map((r) => [r, new Set()])); // kept off the rows, which are sent to the browser
     let current = concurrency;
     const report = (extra = {}) => onProgress({ rows: out, done: todo.filter((r) => r.result === 'done' || r.result === 'failed').length, total: todo.length, concurrency: current, ...extra });
     await runQueue(todo, async (row) => {
       row.result = 'running';
       report();
-      await applyRow(tool, row, run);
+      await applyRow(tool, row, { run, stepsDone: stepsDone.get(row) });
       report();
     }, {
       concurrency, now, wait,

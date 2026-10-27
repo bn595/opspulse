@@ -190,6 +190,7 @@ test('a row retried after a rate limit does not repeat steps that already succee
   const { rows } = await admin.preview('longlived', { org: 'acme', keys: ['Acme_a'], pattern: 'main|dev', branch: 'dev' });
   const done = await admin.apply('longlived', rows, { selected: ['Acme_a'] });
   assert.equal(done[0].result, 'done');
+  assert.ok(!('stepsDone' in done[0]), 'retry bookkeeping stays out of the rows');
   assert.deepEqual(s.state.posts.map(([p]) => p), ['/api/settings/set', '/api/project_branches/delete']);
   assert.deepEqual(audits.map((a) => a.event), ['sonar.branch_pattern_set', 'sonar.branch_deleted']);
 });

@@ -15,11 +15,11 @@ const http = require('./http');
 
 const KEY = /^[a-z0-9][a-z0-9-]*$/i;
 const CHECK_KEY = 'opspulse-check';
+let written = 0; // numbers temporary files across every file backend in this process
 
 function fileBackend(dir) {
   const fileFor = (key) => path.join(dir, `${key}.json`);
   const pending = new Map(); // key -> last write, so writes of one document land in order
-  let written = 0;
   return {
     async get(key) {
       try {
