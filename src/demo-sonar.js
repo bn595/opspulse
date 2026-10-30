@@ -34,22 +34,22 @@ function startDemoSonar() {
       const q = req.method === 'POST' ? new URLSearchParams(body) : u.searchParams;
       const send = (status, data) => setTimeout(() => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(data === '' ? '' : JSON.stringify(data)); }, req.method === 'POST' ? 250 : 30);
       const find = (key) => projects.find((p) => p.key === key);
+      // Like SonarQube Cloud's CloudFront: API paths containing the word "admin" are refused.
+      if (/admin(?![a-z])/i.test(decodeURIComponent(u.pathname))) { res.writeHead(403, { 'content-type': 'text/html' }); return res.end('<HTML><TITLE>ERROR</TITLE></HTML>'); }
       // Web API v2 reads used by the admin tools.
       if (u.pathname === '/organizations/organizations') {
         const key = q.get('organizationKey');
         return send(200, projects.some((p) => p.org === key) ? [{ key, id: `demo-${key}`, uuidV4: `uuid-${key}` }] : []);
       }
       if (u.pathname === '/projects/projects') {
-        const orgs = q.getAll('organizationIds').map((id) => id.replace(/^uuid-/, ''));
-        const keys = q.getAll('keys');
+        // Lists are comma-separated; a repeated parameter keeps only its last value.
+        const listParam = (name) => (q.get(name) === null ? [] : q.getAll(name).at(-1).split(',').filter(Boolean));
+        const orgs = listParam('organizationIds').map((id) => id.replace(/^uuid-/, ''));
+        const keys = listParam('keys');
         let list = projects.filter((p) => !orgs.length || orgs.includes(p.org));
         if (keys.length) list = list.filter((p) => keys.includes(p.key));
         const size = Number(q.get('pageSize') || 50), page = Number(q.get('pageIndex') || 1);
         return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, organizationId: `uuid-${p.org}` })), page: { pageIndex: page, pageSize: size, total: list.length } });
-      }
-      if (u.pathname.startsWith('/projects/project-keys/')) {
-        const key = decodeURIComponent(u.pathname.slice('/projects/project-keys/'.length));
-        return find(key) ? send(200, { key }) : send(404, { message: 'Not Found' });
       }
       if (u.pathname === '/api/settings/values') {
         const own = patterns[q.get('component')];
@@ -75,7 +75,8 @@ function startDemoSonar() {
       return send(404, { errors: [{ msg: 'Unknown url' }] });
     });
   });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)));
+  // unref: the demo server must not keep the process alive on its own (opspulse's server does that).
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => { server.unref(); resolve(`http://127.0.0.1:${server.address().port}`); }));
 }
 
 module.exports = { startDemoSonar };

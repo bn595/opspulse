@@ -394,7 +394,7 @@ The **Admin** view (side navigation, or `#/admin`) holds bulk tools for SonarQub
 | **Delete branch** | Deletes one branch from chosen projects. Main branches are never deleted. |
 | **Make branch long-lived** | Sets the pattern, then deletes the branch where it exists as short-lived, so its next analysis recreates it as long-lived. A branch's type is fixed at its first analysis, so this is the way to turn an existing branch long-lived. |
 
-**How a new key is derived.** Everything up to and including the first `_` of the current key is kept exactly (case included), followed by the project's current name: `Acme-Corp_payments-api`, renamed to `payments-service`, becomes `Acme-Corp_payments-service`. A name that already starts with that prefix, in any case, isn't prefixed again: projects created by the scanner are named after their key, so `Acme-Corp_events` named `Acme-Corp_events` is not drift. The preview flags keys without an `_`, names that aren't valid in a key, and target keys already taken anywhere in SonarQube Cloud.
+**How a new key is derived.** Everything up to and including the first `_` of the current key is kept exactly (case included), followed by the project's current name: `Acme-Corp_payments-api`, renamed to `payments-service`, becomes `Acme-Corp_payments-service`. A name that already starts with that prefix, in any case, isn't prefixed again: projects created by the scanner are named after their key, so `Acme-Corp_events` named `Acme-Corp_events` is not drift. The preview flags keys without an `_`, names that aren't valid in a key, and target keys already taken in any organization the token can see (a private project elsewhere only shows up as a failure when applying).
 
 **Choosing projects.** By name prefix (case-insensitive; empty means every project) or a pasted list of keys.
 
@@ -509,6 +509,7 @@ public/
   admin.js            the admin view
 plugins/examples/     example plugin
 storage/examples/     SQLite storage backend and a template
+live/                 live tests against a SonarQube Cloud test organization (npm run test:live)
 docs/sonar-api.md     every SonarQube Cloud call and whether it uses Web API v1 or v2
 scripts/check-config.js
 test/                 node:test suites, run with npm test
@@ -523,6 +524,12 @@ npm test
 ```
 
 Tests use Node's built-in runner, so there is still nothing to install. They test behaviour at module interfaces: rules, the feed, view logic, scheduling, acknowledgements, storage, logging, plugins, the admin tools, the connectors (against local fake GitHub and SonarQube Cloud APIs), the HTTP client (against local fake proxies) and the secret store (against local fake Entra and Key Vault endpoints). Nothing in the suite calls a real external service.
+
+```
+npm run test:live
+```
+
+Live tests run against a real SonarQube Cloud **test** organization (a free one is fine). They check that SonarQube Cloud still behaves the way the fake in the unit tests assumes, then run the admin tools end to end on throwaway projects, which they delete afterwards. Set `SONAR_TEST_TOKEN` in `.env` (see `.env.example`); without it the tests are skipped. They refuse an organization that isn't on the free plan unless `SONAR_TEST_ORG` names it. Never use a work token.
 
 ## Security notes
 

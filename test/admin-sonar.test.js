@@ -8,6 +8,13 @@ const { createSonarAdmin } = require('../src/admin/sonar');
 const T0 = Date.parse('2026-10-26T12:00:00Z');
 const PATTERN = 'sonar.branch.longLivedBranches.regex';
 
+// Behaviour of the real service, checked against sonarcloud.io (npm run test:live):
+// - a list parameter is comma-separated; when a parameter is repeated, only the last value counts;
+// - CloudFront in front of the API answers 403 with an HTML page when the path contains the word
+//   "admin" (admin-portal, x-admin, Admin; not administration).
+const listParam = (q, name) => (q.get(name) === null ? [] : q.getAll(name).at(-1).split(',').filter(Boolean));
+const blockedByCloudFront = (pathname) => /admin(?![a-z])/i.test(decodeURIComponent(pathname));
+
 // Fake SonarQube Cloud with mutable state. Pages hold `pageSize` projects. `delayMs` keeps POSTs in
 // flight long enough to measure concurrency; `limitOnce` makes the first matching POST return 429.
 async function fakeSonar(t, { projects, branches = {}, patterns = {}, pageSize = 500, delayMs = 0, limitOnce = null, failKeys = [], omitTotal = false }) {
@@ -19,24 +26,22 @@ async function fakeSonar(t, { projects, branches = {}, patterns = {}, pageSize =
       const u = new URL(req.url, 'http://x');
       const q = req.method === 'POST' ? new URLSearchParams(body) : u.searchParams;
       const send = (status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+      if (blockedByCloudFront(u.pathname)) { res.writeHead(403, { 'content-type': 'text/html', server: 'CloudFront' }); return res.end('<HTML><TITLE>ERROR: The request could not be satisfied</TITLE></HTML>'); }
       if (req.method === 'GET') {
+        state.gets = (state.gets || 0) + 1;
         // Web API v2 reads. v1 project search is deliberately absent: the admin tools must not use it.
         if (u.pathname === '/organizations/organizations') {
           const key = q.get('organizationKey');
           return send(200, state.projects.some((p) => p.org === key) ? [{ key, id: `legacy-${key}`, uuidV4: `uuid-${key}` }] : []);
         }
         if (u.pathname === '/projects/projects') {
-          const orgs = q.getAll('organizationIds').map((id) => id.replace(/^uuid-/, ''));
-          const keys = q.getAll('keys');
+          const orgs = listParam(q, 'organizationIds').map((id) => id.replace(/^uuid-/, ''));
+          const keys = listParam(q, 'keys');
           let list = state.projects.filter((p) => !orgs.length || orgs.includes(p.org));
           if (keys.length) list = list.filter((p) => keys.includes(p.key));
           const size = Math.min(Number(q.get('pageSize') || 50), pageSize), page = Number(q.get('pageIndex') || 1);
           state.v2PageSizes = [...(state.v2PageSizes || []), Number(q.get('pageSize'))];
           return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, organizationId: `uuid-${p.org}` })), page: omitTotal ? { pageIndex: page, pageSize: size } : { pageIndex: page, pageSize: size, total: list.length } });
-        }
-        if (u.pathname.startsWith('/projects/project-keys/')) {
-          const key = decodeURIComponent(u.pathname.slice('/projects/project-keys/'.length));
-          return state.projects.some((p) => p.key === key) ? send(200, { key }) : send(404, { message: 'Not Found' });
         }
         if (u.pathname === '/api/settings/values') {
           const own = state.patterns[q.get('component')];
@@ -207,6 +212,20 @@ test('project listing uses Web API v2 with large pages', async (t) => {
   assert.deepEqual(s.state.v2PageSizes, [5000]);
 });
 
+test('a new key containing "admin" can be checked (CloudFront blocks such API paths)', async (t) => {
+  const s = await fakeSonar(t, { projects: [project('acme', 'Acme_portal', 'admin-portal'), project('acme', 'Acme_x', 'x-admin')] });
+  const { rows } = await adminFor(s.url).admin.preview('keys', { org: 'acme', prefix: '' });
+  assert.deepEqual(brief(rows, 'to', 'status'), [['Acme_portal', 'Acme_admin-portal', 'change'], ['Acme_x', 'Acme_x-admin', 'change']]);
+});
+
+test('target keys are checked in batches, not one request per key', async (t) => {
+  const keys = Array.from({ length: 30 }, (_, i) => `Acme_p${i}`);
+  const s = await fakeSonar(t, { projects: keys.map((k) => project('acme', k, `${k.slice(5)}-new`)) });
+  const { rows } = await adminFor(s.url).admin.preview('keys', { org: 'acme', prefix: '' });
+  assert.equal(rows.filter((r) => r.status === 'change').length, 30);
+  assert.ok(s.state.gets <= 5, `${s.state.gets} GET requests`);
+});
+
 test('a target key taken in another organization is a conflict', async (t) => {
   const s = await fakeSonar(t, { projects: [project('acme', 'Acme_old', 'shared'), project('labs', 'Acme_shared', 'other')] });
   const { rows } = await adminFor(s.url).admin.preview('keys', { org: 'acme', prefix: '' });
@@ -216,4 +235,15 @@ test('a target key taken in another organization is a conflict', async (t) => {
 test('an unknown organization is reported clearly', async (t) => {
   const s = await fakeSonar(t, { projects: [project('acme', 'Acme_a', 'a')] });
   await assert.rejects(adminFor(s.url).admin.preview('drift', { org: 'nope' }), /organization "nope" was not found or is not visible to this token/);
+});
+
+test('the demo stand-in for SonarQube Cloud works with the admin tools', async () => {
+  const { startDemoSonar } = require('../src/demo-sonar');
+  const url = await startDemoSonar();
+  const { admin } = adminFor(url);
+  const drift = await admin.preview('drift', { org: 'acme' });
+  assert.ok(drift.rows.some((r) => r.to === 'Acme-Corp_job-runner'), 'a scanner-named project that was renamed');
+  assert.ok(!drift.rows.some((r) => r.project === 'Acme-Corp_events'), 'a scanner-named project is not drift');
+  const listed = await admin.preview('keys', { org: 'acme', keys: ['Acme-Corp_search', 'Acme-Corp_gateway'] });
+  assert.deepEqual(brief(listed.rows, 'status'), [['Acme-Corp_search', 'change'], ['Acme-Corp_gateway', 'change']]);
 });

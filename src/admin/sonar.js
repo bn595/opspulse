@@ -6,12 +6,16 @@
 //
 // Reads use Web API v2 where it exists (organizations, project listing, key existence); everything
 // else is only available in Web API v1. docs/sonar-api.md lists each call and its version.
+//
+// Keys never go in a URL path: CloudFront in front of SonarQube Cloud refuses paths containing the
+// word "admin" (HTML 403), and project keys often contain it.
 
 const { request, RateLimitError } = require('../http');
 const plan = require('./plan');
 
 const PAGE_V2 = 5000; // v2 project listing maximum
 const CHUNK = 100; // project keys per v2 request
+const CHUNK_CHARS = 4000; // and at most this much of them, keeping URLs well under CloudFront's 8 KB
 
 async function mapLimit(list, limit, fn) {
   const out = new Array(list.length);
@@ -20,7 +24,18 @@ async function mapLimit(list, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
   return out;
 }
-const chunks = (list, n) => Array.from({ length: Math.ceil(list.length / n) }, (_, i) => list.slice(i * n, i * n + n));
+// Splits keys into groups of at most CHUNK keys and CHUNK_CHARS characters.
+function chunks(keys) {
+  const out = [];
+  let part = [], size = 0;
+  for (const k of keys) {
+    if (part.length && (part.length === CHUNK || size + k.length + 1 > CHUNK_CHARS)) { out.push(part); part = []; size = 0; }
+    part.push(k);
+    size += k.length + 1;
+  }
+  if (part.length) out.push(part);
+  return out;
+}
 
 // Runs fn over items `concurrency` at a time. fn rethrows RateLimitError and handles everything
 // else itself; a rate-limited item goes back to the front of the queue.
@@ -56,10 +71,10 @@ function apiUrlFor(sonarUrl) {
   return `${u.protocol}//api.${u.host}`;
 }
 
-// Query string with repeated keys for arrays (v2 style: keys=a&keys=b).
+// Query string; arrays are comma-separated (SonarQube Cloud keeps only the last of repeated keys).
 function query(params) {
   const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) for (const x of [].concat(v)) q.append(k, x);
+  for (const [k, v] of Object.entries(params)) q.append(k, [].concat(v).join(','));
   return q;
 }
 
@@ -94,7 +109,7 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     const organizationIds = await orgId(org); // the v2 filter takes a list; one organization here
     if (keys) {
       const found = new Map();
-      for (const part of chunks(keys, CHUNK)) {
+      for (const part of chunks(keys)) {
         const d = await getV2('/projects/projects', { organizationIds, keys: part, pageSize: PAGE_V2 });
         for (const c of d.projects || []) found.set(c.key, { key: c.key, name: c.name });
       }
@@ -111,18 +126,15 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     return out.filter((c) => c.name.toLowerCase().startsWith(lower));
   }
 
-  // Keys already taken anywhere in SonarQube Cloud (keys are unique across organizations).
+  // Keys already taken in any organization the token can see (keys are unique across organizations;
+  // a private project elsewhere is invisible, and its conflict shows up when the change is applied).
   async function existingKeys(keys) {
-    const taken = await mapLimit([...new Set(keys)], concurrency, async (k) => {
-      try {
-        await getV2(`/projects/project-keys/${encodeURIComponent(k)}`);
-        return k;
-      } catch (e) {
-        if (e.status === 404) return null;
-        throw e;
-      }
-    });
-    return new Set(taken.filter(Boolean));
+    const taken = new Set();
+    for (const part of chunks([...new Set(keys)])) {
+      const d = await getV2('/projects/projects', { keys: part, pageSize: CHUNK });
+      for (const c of d.projects || []) taken.add(c.key);
+    }
+    return taken;
   }
   // Plans keys twice: once to learn the target keys, then again knowing which of them are taken.
   async function planWithTakenKeys(planFn, projects) {

@@ -9,7 +9,8 @@
     "start": "node src/server.js",
     "demo": "node src/server.js --demo",
     "check": "node scripts/check-config.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:live": "node --test live/sonar.live.js"
   },
   "engines": { "node": ">=18.17" },
   "keywords": ["dashboard", "github-actions", "jira", "sonarqube", "ghas", "devops"]

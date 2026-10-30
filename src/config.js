@@ -198,4 +198,4 @@ function publicView(cfg, secretStatus) {
   };
 }
 
-module.exports = { load, publicView, secretRefs, requiredSecrets, stripJsonComments };
+module.exports = { load, publicView, secretRefs, requiredSecrets, stripJsonComments, loadDotEnv };

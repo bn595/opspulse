@@ -9,6 +9,10 @@ opspulse uses SonarQube Cloud **Web API v2** where it offers the operation, and 
 
 Both use the same bearer token, the same `sonar` proxy entry (`network.proxies.sonar`) and the same rate-limit tracking.
 
+Behaviour to know about (checked against sonarcloud.io by `npm run test:live`):
+- **Lists are comma-separated:** `keys=a,b`. When a parameter is repeated (`keys=a&keys=b`), only the last value counts.
+- **No keys in URL paths:** CloudFront in front of the API refuses paths containing the word "admin" (`…/x-admin`, `…/Admin`, but not `…/administration`) with an HTML 403. Project keys often contain it, so opspulse sends keys only in query strings and form bodies.
+
 Migration is tracked in [issue #1](https://github.com/bn595/opspulse/issues/1). When SonarSource adds a v2 endpoint for something below, move the call, update this table, and tick the issue's checklist.
 
 ## Admin tools ([src/admin/sonar.js](../src/admin/sonar.js))
@@ -17,7 +21,7 @@ Migration is tracked in [issue #1](https://github.com/bn595/opspulse/issues/1). 
 |---|---|---|---|
 | Organization key → ID | **v2** | `GET /organizations/organizations?organizationKey=` | — |
 | List projects (5,000 per page) | **v2** | `GET /projects/projects?organizationIds=&keys=&pageIndex=&pageSize=` | — |
-| Is a key taken (global) | **v2** | `GET /projects/project-keys/{key}` (404 = free) | — |
+| Which keys are taken (100 per request, any organization the token can see) | **v2** | `GET /projects/projects?keys=a,b,…` | Not `GET /projects/project-keys/{key}`: the key is in the path (see above) |
 | Change a project key | v1 | `POST /api/projects/update_key` (`from`, `to`) | Not in v2 |
 | Read long-lived branch pattern | v1 | `GET /api/settings/values?component=&keys=sonar.branch.longLivedBranches.regex` | No project settings in v2 |
 | Set long-lived branch pattern | v1 | `POST /api/settings/set` (`component`, `key`, `value`) | No project settings in v2 |
