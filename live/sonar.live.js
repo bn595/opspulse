@@ -46,7 +46,7 @@ async function eventually(check, ms = 15000) {
 }
 
 describe('SonarQube Cloud (live)', { skip: !token && 'SONAR_TEST_TOKEN is not set' }, () => {
-  let org, orgUuid, pre, admin;
+  let org, orgUuid, orgLegacyId, pre, admin;
   const audits = [];
   const keys = {};
   const created = new Set();
@@ -58,7 +58,7 @@ describe('SonarQube Cloud (live)', { skip: !token && 'SONAR_TEST_TOKEN is not se
     if (!process.env.SONAR_TEST_ORG) assert.equal(chosen.subscription, 'FREE', `"${chosen.key}" is not on the free plan; set SONAR_TEST_ORG if it really is a test organization`);
     org = chosen.key;
     pre = `${org}_`;
-    orgUuid = (await get(`${V2}/organizations/organizations?organizationKey=${org}`))[0].uuidV4;
+    [{ uuidV4: orgUuid, id: orgLegacyId }] = await get(`${V2}/organizations/organizations?organizationKey=${org}`);
 
     const id = `opl-${run}`;
     Object.assign(keys, {
@@ -105,6 +105,19 @@ describe('SonarQube Cloud (live)', { skip: !token && 'SONAR_TEST_TOKEN is not se
       assert.deepEqual(await found(`keys=${keys.renamed.key}&keys=${keys.taken.key}`), [keys.taken.key]);
     });
 
+    test('repository bindings are listed by the legacy organization id, 50 per page, joined on legacyId', async () => {
+      const B = `${V2}/dop-translation/project-bindings`;
+      const d = await get(`${B}?organizationId=${orgLegacyId}&pageSize=50&pageIndex=1`);
+      assert.equal(typeof d.page.total, 'number');
+      await assert.rejects(get(`${B}?organizationId=${orgLegacyId}&pageSize=51`), (e) => e.status === 400);
+      await assert.rejects(get(`${B}?organizationId=${orgUuid}`), (e) => e.status === 404);
+      if (!d.bindings.length) return; // nothing bound in the test organization: shape not checkable
+      const b = d.bindings[0];
+      assert.deepEqual([typeof b.projectId, typeof b.slug, typeof b.url], ['string', 'string', 'string']);
+      const all = (await get(`${V2}/projects/projects?organizationIds=${orgUuid}&pageSize=5000`)).projects;
+      assert.ok(all.some((p) => p.legacyId === b.projectId), 'the binding projectId matches a project legacyId');
+    });
+
     test('CloudFront refuses API paths containing the word "admin"', async () => {
       await assert.rejects(get(`${V2}/projects/project-keys/${pre}opl-${run}-admin-x`), (e) => e.status === 403 && /text\/html/.test(e.message));
       await assert.rejects(get(`${V2}/projects/project-keys/${pre}opl-${run}-administration`), (e) => e.status === 404);
@@ -118,6 +131,7 @@ describe('SonarQube Cloud (live)', { skip: !token && 'SONAR_TEST_TOKEN is not se
         assert.equal(mine(r.rows).length, 3);
         return r;
       });
+      assert.ok(mine(rows).every((r) => r.source === 'name' && r.review), 'projects created through the API are not bound');
       assert.deepEqual(brief(rows, 'to', 'status').sort(), [
         [`opl-${run}-clash-src`, `opl-${run}-clash`, 'conflict'],
         [`opl-${run}-old`, `opl-${run}-renamed`, 'change'],

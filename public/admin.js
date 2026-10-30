@@ -5,10 +5,10 @@
 const Admin = (() => {
   const TOOLS = {
     drift: { label: 'Name drift', select: false, pattern: false, branch: false, verb: 'Update keys', noun: 'project key',
-      intro: 'Finds projects whose key no longer follows their name, usually because the repository was renamed. The new key keeps everything up to the first underscore and adds the current name.',
+      intro: 'Finds projects whose key no longer follows their repository, usually because the repository was renamed. The new key keeps everything up to the first underscore and adds the name of the bound repository (or the project name, for projects not bound to one).',
       warn: 'Pipelines that still pass the old sonar.projectKey will fail until they use the new key.' },
     keys: { label: 'Project keys', select: true, pattern: false, branch: false, verb: 'Update keys', noun: 'project key',
-      intro: 'Updates the keys of selected projects to follow their current name. The new key keeps everything up to the first underscore and adds the current name.',
+      intro: 'Updates the keys of selected projects to follow their repository. The new key keeps everything up to the first underscore and adds the name of the bound repository (or the project name, for projects not bound to one).',
       warn: 'Pipelines that still pass the old sonar.projectKey will fail until they use the new key.' },
     pattern: { label: 'Long-lived branch pattern', select: true, pattern: true, branch: false, verb: 'Set pattern', noun: 'project',
       intro: 'Sets sonar.branch.longLivedBranches.regex on selected projects. It only affects branches analyzed for the first time after the change.' },
@@ -25,6 +25,17 @@ const Admin = (() => {
     'not-found': ['Project not found', 'pill-warn'], main: ['Main branch', 'pill-warn'],
   };
   const RESULT = { queued: 'Queued', running: 'Running…', waiting: 'Waiting', done: 'Done', failed: 'Failed' };
+  // Where a new key's name comes from (row.source), and the hint that explains the marks.
+  const SOURCE = {
+    repo: ['repo', '', 'From the repository this project is bound to. SonarQube Cloud updates the binding when the repository is renamed.'],
+    name: ['name', 'mark-warn', 'Not bound to a repository, so the project name is used. It may not match the repository: check it before applying. Not selected by default.'],
+  };
+  const NAME_DIFFERS = 'The project name differs from its repository. The key follows the repository.';
+  const KEY_HINT = `How the new key is chosen:
+• repo: ${SOURCE.repo[2]}
+• name: ${SOURCE.name[2]}
+• ≠ repo, next to a project name: ${NAME_DIFFERS}`;
+  const mark = (text, cls, title) => `<span class="mark ${cls}" title="${esc(title)}">${esc(text)}</span>`;
 
   const state = {
     tool: 'drift',
@@ -72,7 +83,12 @@ const Admin = (() => {
   }
 
   function columns(tool) {
-    const keyCols = [['Project', (r) => `<span class="mono">${esc(r.project)}</span>`], ['Name', (r) => esc(r.name ?? '—')], ['New key', (r) => (r.to ? `<span class="mono">${esc(r.to)}</span>` : '—')]];
+    const keyCols = [
+      ['Project', (r) => `<span class="mono">${esc(r.project)}</span>`],
+      ['Name', (r) => `${esc(r.name ?? '—')}${r.repo && r.name && !r.name.endsWith(r.repo) ? ` ${mark('≠ repo', '', NAME_DIFFERS)}` : ''}`],
+      ['Repository', (r) => (r.repoUrl ? `<a class="mono" href="${href(r.repoUrl)}" target="_blank" rel="noopener">${esc(r.repo)} ↗</a>` : r.source === 'name' ? '<span class="muted">not bound</span>' : '—')],
+      [`New key <span class="hint" title="${esc(KEY_HINT)}" tabindex="0" aria-label="${esc(KEY_HINT)}">ⓘ</span>`, (r) => (r.to ? `<span class="mono">${esc(r.to)}</span>${SOURCE[r.source] ? ` ${mark(...SOURCE[r.source])}` : ''}` : '—'), true],
+    ];
     if (tool === 'pattern') return [['Project', keyCols[0][1]], ['Current pattern', (r) => `<span class="mono">${esc(r.from ?? '—')}</span>${r.inherited ? ' <span class="muted small">inherited</span>' : ''}`], ['New pattern', (r) => `<span class="mono">${esc(r.to)}</span>`]];
     if (tool === 'delete') return [['Project', keyCols[0][1]], ['Branch type', (r) => esc(r.type || '—')], ['Last analysis', (r) => (r.analysisDate ? rel(r.analysisDate) : '—')]];
     if (tool === 'longlived') return [['Project', keyCols[0][1]], ['Pattern', (r) => (r.setPattern ? `<span class="mono">${esc(r.from ?? '—')}</span> → <span class="mono">${esc(r.to)}</span>` : '<span class="muted">already set</span>')], ['Branch', (r) => (r.deleteBranch ? `delete <span class="mono">${esc(r.branch)}</span>` : '<span class="muted">nothing to delete</span>')]];
@@ -87,11 +103,11 @@ const Admin = (() => {
     const counts = countBy(rows, (r) => r.status).map(([s, n]) => `${n} ${(STATUS[s]?.[0] || s).toLowerCase()}`);
     const actionable = rows.filter((r) => r.actionable);
     const cols = columns(p.tool);
-    EXPORT.admin = () => ({ name: `sonar-${p.tool}`, rows, columns: [['Project', (r) => r.project], ['Name', (r) => r.name], ['Status', (r) => r.status], ['From', (r) => r.from], ['To', (r) => r.to], ['Branch', (r) => r.branch], ['Result', (r) => r.result], ['Error', (r) => r.error], ['Link', (r) => r.url]] });
+    EXPORT.admin = () => ({ name: `sonar-${p.tool}`, rows, columns: [['Project', (r) => r.project], ['Name', (r) => r.name], ['Status', (r) => r.status], ['From', (r) => r.from], ['To', (r) => r.to], ['Key source', (r) => r.source], ['Repository', (r) => r.repoUrl], ['Branch', (r) => r.branch], ['Result', (r) => r.result], ['Error', (r) => r.error], ['Link', (r) => r.url]] });
     return `<div class="sub-h"><h3>Preview · ${esc(TOOLS[p.tool].label)}</h3><span class="tb-right"><span class="muted small">${plural(rows.length, 'project')}${counts.length ? ' · ' + esc(counts.join(' · ')) : ''}</span>${exportBtn('admin')}</span></div>
       ${!running && actionable.length ? `<div class="toolbar"><span class="muted small">${state.selected.size} of ${actionable.length} selected</span><button class="link-btn" type="button" data-admin="all">Select all</button><button class="link-btn" type="button" data-admin="none">Select none</button></div>` : ''}
       <div class="tbl-wrap"><table class="admin-table">
-        <thead><tr><th></th><th>Status</th>${cols.map(([h]) => `<th>${esc(h)}</th>`).join('')}${running ? '<th>Result</th>' : ''}<th class="r">Open</th></tr></thead>
+        <thead><tr><th></th><th>Status</th>${cols.map(([h, , html]) => `<th>${html ? h : esc(h)}</th>`).join('')}${running ? '<th>Result</th>' : ''}<th class="r">Open</th></tr></thead>
         <tbody>${rows.map((r) => `<tr class="${r.result ? `res-${r.result}` : ''}">
           <td>${r.actionable ? `<input type="checkbox" data-row="${esc(r.project)}" ${state.selected.has(r.project) ? 'checked' : ''} ${running ? 'disabled' : ''} aria-label="Select ${esc(r.project)}">` : ''}</td>
           <td><span class="pill ${STATUS[r.status]?.[1] || ''}">${esc(STATUS[r.status]?.[0] || r.status)}</span></td>
@@ -146,7 +162,7 @@ const Admin = (() => {
     if (!r || r.error) state.error = r?.error || 'Preview failed: the server did not respond.';
     else {
       state.preview = { id: r.id, tool: state.tool, rows: r.rows, branch: f.branch.trim() };
-      for (const row of r.rows) if (row.actionable) state.selected.add(row.project);
+      for (const row of r.rows) if (row.actionable && !row.review) state.selected.add(row.project);
     }
     render();
   }

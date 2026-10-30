@@ -16,6 +16,7 @@ const plan = require('./plan');
 const PAGE_V2 = 5000; // v2 project listing maximum
 const CHUNK = 100; // project keys per v2 request
 const CHUNK_CHARS = 4000; // and at most this much of them, keeping URLs well under CloudFront's 8 KB
+const BINDINGS_PAGE = 50; // v2 repository bindings maximum
 
 async function mapLimit(list, limit, fn) {
   const out = new Array(list.length);
@@ -91,34 +92,34 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
   });
   const link = (key) => `${base}/project/overview?id=${encodeURIComponent(key)}`;
 
-  // v2 projects are filtered by organization UUID; look it up once per organization key.
-  const orgIds = new Map();
-  async function orgId(org) {
-    if (!orgIds.has(org)) {
+  // v2 filters projects by organization UUID and bindings by its legacy id; look both up once per key.
+  const orgs = new Map();
+  async function orgOf(org) {
+    if (!orgs.has(org)) {
       const list = await getV2('/organizations/organizations', { organizationKey: org });
       const o = Array.isArray(list) ? list.find((x) => x.key === org) || list[0] : null;
       if (!o) throw new Error(`organization "${org}" was not found or is not visible to this token`);
-      orgIds.set(org, o.uuidV4 || o.id);
+      orgs.set(org, { uuid: o.uuidV4 || o.id, legacyId: o.id });
     }
-    return orgIds.get(org);
+    return orgs.get(org);
   }
 
   // Projects by name prefix (case-insensitive; '' = all) or by key. Keys that don't exist come back
   // as { key, missing: true } in the order given. v2 has no name search, so prefixes filter locally.
   async function listProjects(org, { prefix = '', keys = null }) {
-    const organizationIds = await orgId(org); // the v2 filter takes a list; one organization here
+    const organizationIds = (await orgOf(org)).uuid; // the v2 filter takes a list; one organization here
     if (keys) {
       const found = new Map();
       for (const part of chunks(keys)) {
         const d = await getV2('/projects/projects', { organizationIds, keys: part, pageSize: PAGE_V2 });
-        for (const c of d.projects || []) found.set(c.key, { key: c.key, name: c.name });
+        for (const c of d.projects || []) found.set(c.key, { key: c.key, name: c.name, legacyId: c.legacyId });
       }
       return keys.map((k) => found.get(k) || { key: k, missing: true });
     }
     const out = [];
     for (let pageIndex = 1; ; pageIndex++) {
       const d = await getV2('/projects/projects', { organizationIds, pageSize: PAGE_V2, pageIndex });
-      out.push(...(d.projects || []).map((c) => ({ key: c.key, name: c.name })));
+      out.push(...(d.projects || []).map((c) => ({ key: c.key, name: c.name, legacyId: c.legacyId })));
       // Without a total, keep going until a page comes back empty.
       if (!d.projects?.length || (d.page?.total != null && out.length >= d.page.total)) break;
     }
@@ -136,6 +137,31 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     }
     return taken;
   }
+  // The repository each project is bound to: project legacyId -> { name, url }. Read for the whole
+  // organization; SonarQube Cloud updates a binding when its repository is renamed.
+  async function bindingsOf(org) {
+    const { legacyId } = await orgOf(org);
+    const page = (pageIndex) => getV2('/dop-translation/project-bindings', { organizationId: legacyId, pageSize: BINDINGS_PAGE, pageIndex });
+    const first = await page(1);
+    let rest;
+    if (first.page?.total != null) {
+      const pages = Math.ceil(first.page.total / BINDINGS_PAGE);
+      rest = await mapLimit(Array.from({ length: Math.max(0, pages - 1) }, (_, i) => i + 2), concurrency, page);
+    } else {
+      rest = []; // without a total, keep going until a page comes back short
+      for (let i = 2, last = first; (last.bindings || []).length === BINDINGS_PAGE; i++) rest.push((last = await page(i)));
+    }
+    const out = new Map();
+    for (const d of [first, ...rest]) {
+      for (const b of d.bindings || []) if (b.slug) out.set(b.projectId, { name: b.slug.split('/').pop(), url: b.url || null });
+    }
+    return out;
+  }
+  async function withRepos(org, projects) {
+    const bindings = await bindingsOf(org);
+    return projects.map((p) => ({ ...p, repo: bindings.get(p.legacyId) || null }));
+  }
+
   // Plans keys twice: once to learn the target keys, then again knowing which of them are taken.
   async function planWithTakenKeys(planFn, projects) {
     const targets = planFn(projects).filter((r) => r.status === 'change').map((r) => r.to);
@@ -159,8 +185,8 @@ function createSonarAdmin({ sonarUrl, apiUrl = apiUrlFor(sonarUrl), token, actor
     const projects = listed.filter((p) => !p.missing);
     const missing = listed.filter((p) => p.missing).map((p) => ({ project: p.key, name: null, status: 'not-found', actionable: false }));
     let rows;
-    if (tool === 'drift') rows = await planWithTakenKeys(plan.findDrift, projects);
-    else if (tool === 'keys') rows = await planWithTakenKeys(plan.planKeys, projects);
+    if (tool === 'drift') rows = await planWithTakenKeys(plan.findDrift, await withRepos(org, projects));
+    else if (tool === 'keys') rows = await planWithTakenKeys(plan.planKeys, await withRepos(org, projects));
     else if (tool === 'pattern') rows = plan.planPattern(await withPattern(projects), pattern);
     else if (tool === 'delete') rows = plan.planDelete(await withBranches(projects), branch);
     else if (tool === 'longlived') rows = plan.planLongLived(await withBranches(await withPattern(projects)), pattern, branch);

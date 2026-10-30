@@ -49,6 +49,29 @@ test('drift also lists keys in an unrecognized format whose name differs, for ma
   assert.deepEqual(brief(rows, 'status', 'actionable'), [['legacyreports', 'unrecognized', false]]);
 });
 
+// Projects with `repo`: the repository they are bound to ({ name, url }), or null when unbound.
+const repo = (name) => ({ name, url: `https://github.com/Acme/${name}` });
+
+test('the new key follows the bound repository, not the project name', () => {
+  const rows = plan.planKeys([
+    { key: 'Acme_old', name: 'whatever-ui', repo: repo('payments') },
+    { key: 'Acme_payments2', name: 'Payments 2 (legacy)', repo: repo('payments2') },
+  ]);
+  assert.deepEqual(brief(rows, 'to', 'status', 'source', 'repo'), [
+    ['Acme_old', 'Acme_payments', 'change', 'repo', 'payments'],
+    ['Acme_payments2', 'Acme_payments2', 'unchanged', 'repo', 'payments2'],
+  ]);
+});
+
+test('a key that matches its repository is not drift, whatever the project is named', () => {
+  assert.deepEqual(plan.findDrift([{ key: 'Acme_payments', name: 'payments-ui', repo: repo('payments') }]), []);
+});
+
+test('without a binding the project name is used, and the row is marked for review', () => {
+  const rows = plan.planKeys([{ key: 'Acme_old', name: 'new', repo: null }, { key: 'Acme_x', name: 'y', repo: repo('z') }]);
+  assert.deepEqual(brief(rows, 'to', 'source', 'review', 'actionable'), [['Acme_old', 'Acme_new', 'name', true, true], ['Acme_x', 'Acme_z', 'repo', false, true]]);
+});
+
 test('a branch pattern is required', () => {
   const p = [{ key: 'Acme_a', name: 'a', pattern: 'x', branches: [] }];
   for (const pattern of ['', '  ', undefined, null]) {

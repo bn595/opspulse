@@ -12,6 +12,8 @@ const PATTERN = 'sonar.branch.longLivedBranches.regex';
 // - a list parameter is comma-separated; when a parameter is repeated, only the last value counts;
 // - CloudFront in front of the API answers 403 with an HTML page when the path contains the word
 //   "admin" (admin-portal, x-admin, Admin; not administration).
+// - repository bindings are listed per organization by its legacy id (the v2 `id`, not `uuidV4`),
+//   at most 50 per page; a binding's projectId is the project's legacyId.
 const listParam = (q, name) => (q.get(name) === null ? [] : q.getAll(name).at(-1).split(',').filter(Boolean));
 const blockedByCloudFront = (pathname) => /admin(?![a-z])/i.test(decodeURIComponent(pathname));
 
@@ -41,7 +43,19 @@ async function fakeSonar(t, { projects, branches = {}, patterns = {}, pageSize =
           if (keys.length) list = list.filter((p) => keys.includes(p.key));
           const size = Math.min(Number(q.get('pageSize') || 50), pageSize), page = Number(q.get('pageIndex') || 1);
           state.v2PageSizes = [...(state.v2PageSizes || []), Number(q.get('pageSize'))];
-          return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, organizationId: `uuid-${p.org}` })), page: omitTotal ? { pageIndex: page, pageSize: size } : { pageIndex: page, pageSize: size, total: list.length } });
+          return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, legacyId: `L-${p.key}`, organizationId: `uuid-${p.org}` })), page: omitTotal ? { pageIndex: page, pageSize: size } : { pageIndex: page, pageSize: size, total: list.length } });
+        }
+        if (u.pathname === '/dop-translation/project-bindings') {
+          const size = Number(q.get('pageSize') || 50), page = Number(q.get('pageIndex') || 1);
+          if (size > 50) return send(400, { message: 'pageSize: must be less than or equal to 50' });
+          const org = (q.get('organizationId') || '').replace(/^legacy-/, '');
+          if (!state.projects.some((p) => p.org === org)) return send(404, { message: 'Not Found' });
+          state.bindingRequests = (state.bindingRequests || 0) + 1;
+          const bound = state.projects.filter((p) => p.org === org && p.repo);
+          return send(200, {
+            bindings: bound.slice((page - 1) * size, page * size).map((p) => ({ projectId: `L-${p.key}`, devOpsPlatform: 'github', slug: p.repo, url: `https://github.com/${p.repo}` })),
+            page: { pageIndex: page, pageSize: size, total: bound.length },
+          });
         }
         if (u.pathname === '/api/settings/values') {
           const own = state.patterns[q.get('component')];
@@ -83,7 +97,7 @@ function adminFor(url, extra = {}) {
   });
   return { admin, audits, clock };
 }
-const project = (org, key, name) => ({ org, key, name });
+const project = (org, key, name, repo) => ({ org, key, name, repo });
 const brief = (rows, ...f) => rows.map((r) => [r.project, ...f.map((k) => r[k])]);
 
 test('a key preview selects projects by name prefix across pages and flags existing target keys', async (t) => {
@@ -226,6 +240,27 @@ test('target keys are checked in batches, not one request per key', async (t) =>
   assert.ok(s.state.gets <= 5, `${s.state.gets} GET requests`);
 });
 
+test('keys follow the bound repository; unbound projects fall back to their name for review', async (t) => {
+  const s = await fakeSonar(t, { projects: [
+    project('acme', 'Acme_old', 'something-else', 'Acme/payments'), // repository renamed: drift
+    project('acme', 'Acme_ok', 'ok-ui', 'Acme/ok'), // name differs, key matches the repository: fine
+    project('acme', 'Acme_cli', 'cli2'), // not bound
+  ] });
+  const { rows } = await adminFor(s.url).admin.preview('drift', { org: 'acme' });
+  assert.deepEqual(brief(rows, 'to', 'source', 'review', 'repoUrl'), [
+    ['Acme_old', 'Acme_payments', 'repo', false, 'https://github.com/Acme/payments'],
+    ['Acme_cli', 'Acme_cli2', 'name', true, null],
+  ]);
+});
+
+test('repository bindings are read for the whole organization, 50 per page', async (t) => {
+  const keys = Array.from({ length: 120 }, (_, i) => `Acme_p${i}`);
+  const s = await fakeSonar(t, { projects: keys.map((k) => project('acme', k, 'stale-name', `Acme/${k.slice(5)}`)) });
+  const { rows } = await adminFor(s.url).admin.preview('keys', { org: 'acme', prefix: '' });
+  assert.equal(rows.filter((r) => r.status === 'unchanged' && r.source === 'repo').length, 120);
+  assert.equal(s.state.bindingRequests, 3);
+});
+
 test('a target key taken in another organization is a conflict', async (t) => {
   const s = await fakeSonar(t, { projects: [project('acme', 'Acme_old', 'shared'), project('labs', 'Acme_shared', 'other')] });
   const { rows } = await adminFor(s.url).admin.preview('keys', { org: 'acme', prefix: '' });
@@ -244,6 +279,8 @@ test('the demo stand-in for SonarQube Cloud works with the admin tools', async (
   const drift = await admin.preview('drift', { org: 'acme' });
   assert.ok(drift.rows.some((r) => r.to === 'Acme-Corp_job-runner'), 'a scanner-named project that was renamed');
   assert.ok(!drift.rows.some((r) => r.project === 'Acme-Corp_events'), 'a scanner-named project is not drift');
+  assert.ok(!drift.rows.some((r) => r.project === 'Acme-Corp_reporting'), 'named differently, but the key matches the repository');
+  assert.ok(drift.rows.some((r) => r.to === 'Acme-Corp_inventory-service' && r.source === 'repo'), 'repository renamed, project name set by hand');
   const listed = await admin.preview('keys', { org: 'acme', keys: ['Acme-Corp_search', 'Acme-Corp_gateway'] });
   assert.deepEqual(brief(listed.rows, 'status'), [['Acme-Corp_search', 'change'], ['Acme-Corp_gateway', 'change']]);
 });

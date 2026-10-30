@@ -288,6 +288,10 @@ tbody tr:hover td { background: var(--card-2); }
 .pill-act { border-color: var(--accent); color: var(--accent-ink); }
 .pill-warn { border-color: color-mix(in srgb, var(--warn) 60%, transparent); color: var(--warn-ink); }
 .pill-muted { color: var(--muted); }
+.mark { display: inline-block; font-size: 10px; line-height: 1.5; padding: 0 5px; margin-left: 2px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-2); cursor: help; white-space: nowrap; vertical-align: 1px; }
+.mark-warn { border-color: color-mix(in srgb, var(--warn) 60%, transparent); color: var(--warn-ink); }
+.hint { cursor: help; color: var(--muted); font-weight: normal; }
+.hint:hover, .hint:focus { color: var(--accent-ink); }
 .admin-table td:first-child { width: 28px; }
 .admin-table tr.res-done td { background: color-mix(in srgb, var(--good) 8%, transparent); }
 .admin-table tr.res-failed td { background: color-mix(in srgb, var(--critical) 8%, transparent); }

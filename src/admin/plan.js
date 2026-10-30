@@ -8,8 +8,9 @@ const KEY_CHARS = /^[A-Za-z0-9_.:-]+$/;
 const PATTERN_SETTING = 'sonar.branch.longLivedBranches.regex';
 
 // New key = old key up to and including the first '_' (the organization part, which cannot itself
-// contain '_'), followed by the project's current name. A name that already starts with that prefix
-// (in any case; projects created by the scanner are named after their key) is not prefixed again.
+// contain '_'), followed by `name`: the bound repository's name, or the project name when the project
+// is not bound. A name that already starts with that prefix (in any case; projects created by the
+// scanner are named after their key) is not prefixed again.
 function deriveKey(key, name) {
   const cut = key.indexOf('_');
   if (cut < 1) return { to: null, status: 'unrecognized' };
@@ -20,21 +21,28 @@ function deriveKey(key, name) {
   return { to, status: to === key ? 'unchanged' : 'change' };
 }
 
-// existingKeys: keys already taken in the organization, used to detect conflicts.
+// projects: [{ key, name, repo? }], where repo is the bound repository ({ name, url }), or null when
+// the project is not bound. Keys follow the repository when there is one; otherwise the project name,
+// and the row is marked for review (a project name can differ from the repository's).
+// existingKeys: keys already taken, used to detect conflicts.
 function planKeys(projects, { existingKeys = new Set() } = {}) {
-  const rows = projects.map((p) => ({ project: p.key, name: p.name, from: p.key, ...deriveKey(p.key, p.name) }));
+  const rows = projects.map((p) => ({
+    project: p.key, name: p.name, from: p.key,
+    repo: p.repo?.name ?? null, repoUrl: p.repo?.url ?? null, source: p.repo ? 'repo' : 'name', review: p.repo === null,
+    ...deriveKey(p.key, p.repo ? p.repo.name : p.name),
+  }));
   const targets = new Map();
   for (const r of rows) if (r.status === 'change') targets.set(r.to, (targets.get(r.to) || 0) + 1);
   for (const r of rows) if (r.status === 'change' && (existingKeys.has(r.to) || targets.get(r.to) > 1)) r.status = 'conflict';
   return rows.map((r) => ({ ...r, actionable: r.status === 'change' }));
 }
 
-// Projects whose key no longer follows their name. Conflicts are checked against every key listed
-// plus `existingKeys` (keys known to be taken elsewhere). Keys in another format are listed when the
-// name differs, so they can be followed up by hand.
+// Projects whose key no longer follows their repository (or name, when unbound). Conflicts are
+// checked against every key listed plus `existingKeys` (keys known to be taken elsewhere). Keys in
+// another format are listed when the name differs, so they can be followed up by hand.
 function findDrift(projects, { existingKeys = new Set() } = {}) {
   const taken = new Set([...projects.map((p) => p.key), ...existingKeys]);
-  return planKeys(projects, { existingKeys: taken }).filter((r) => r.status !== 'unchanged' && !(r.status === 'unrecognized' && r.from === r.name));
+  return planKeys(projects, { existingKeys: taken }).filter((r) => r.status !== 'unchanged' && !(r.status === 'unrecognized' && r.from === (r.repo ?? r.name)));
 }
 
 function compile(pattern) {

@@ -7,13 +7,23 @@ const http = require('http');
 function seedProjects() {
   const repos = ['payments-api', 'web-portal', 'portal', 'auth-service', 'data-pipeline', 'mobile-app', 'infra-tf', 'search', 'billing', 'notifications',
     'reporting', 'gateway', 'catalog', 'inventory', 'checkout', 'pricing', 'ledger', 'identity', 'scheduler', 'exporter', 'importer', 'metrics', 'alerts', 'docs'];
-  const renamed = { 'payments-api': 'payments-service', 'web-portal': 'portal', 'data-pipeline': 'data-platform', search: 'search-v2', billing: 'Legacy Billing', gateway: 'api-gateway', ledger: 'ledger-core' };
-  const projects = repos.map((r) => ({ org: 'acme', key: `Acme-Corp_${r}`, name: renamed[r] || r }));
-  projects.push({ org: 'acme', key: 'legacyreports', name: 'reports' });
-  // Created by the scanner, so named after the key; one of them was renamed since.
-  projects.push({ org: 'acme', key: 'Acme-Corp_events', name: 'Acme-Corp_events' }, { org: 'acme', key: 'Acme-Corp_jobs', name: 'Acme-Corp_job-runner' });
-  projects.push(...['tools', 'sandbox', 'experiments'].map((r) => ({ org: 'acme-labs', key: `acme-labs_${r}`, name: r === 'sandbox' ? 'playground' : r })));
-  return projects;
+  // Repositories renamed since their project was created (SonarQube Cloud renames the project too).
+  const renamed = { 'payments-api': 'payments-service', 'web-portal': 'portal', 'data-pipeline': 'data-platform', search: 'search-v2', gateway: 'api-gateway', ledger: 'ledger-core' };
+  // Project names set by hand, which no longer say which repository it is.
+  const named = { reporting: 'reporting-dashboard', inventory: 'inventory', billing: 'Legacy Billing' };
+  const repoOf = { inventory: 'inventory-service' }; // renamed, but the project name was set by hand
+  const projects = repos.map((r) => {
+    const repo = r === 'billing' ? null : repoOf[r] || renamed[r] || r;
+    return { org: 'acme', key: `Acme-Corp_${r}`, name: named[r] || renamed[r] || r, repo: repo && `Acme-Corp/${repo}` };
+  });
+  projects.push({ org: 'acme', key: 'legacyreports', name: 'reports', repo: null });
+  // Analyzed from CI without a binding, so named after the key; one of them was renamed since.
+  projects.push({ org: 'acme', key: 'Acme-Corp_events', name: 'Acme-Corp_events', repo: null }, { org: 'acme', key: 'Acme-Corp_jobs', name: 'Acme-Corp_job-runner', repo: null });
+  projects.push(...['tools', 'sandbox', 'experiments'].map((r) => {
+    const name = r === 'sandbox' ? 'playground' : r;
+    return { org: 'acme-labs', key: `acme-labs_${r}`, name, repo: `acme-labs/${name}` };
+  }));
+  return projects.map((p) => ({ ...p, legacyId: `L-${p.key}` }));
 }
 
 function startDemoSonar() {
@@ -49,7 +59,16 @@ function startDemoSonar() {
         let list = projects.filter((p) => !orgs.length || orgs.includes(p.org));
         if (keys.length) list = list.filter((p) => keys.includes(p.key));
         const size = Number(q.get('pageSize') || 50), page = Number(q.get('pageIndex') || 1);
-        return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, organizationId: `uuid-${p.org}` })), page: { pageIndex: page, pageSize: size, total: list.length } });
+        return send(200, { projects: list.slice((page - 1) * size, page * size).map((p) => ({ key: p.key, name: p.name, legacyId: p.legacyId, organizationId: `uuid-${p.org}` })), page: { pageIndex: page, pageSize: size, total: list.length } });
+      }
+      if (u.pathname === '/dop-translation/project-bindings') {
+        const size = Number(q.get('pageSize') || 50), page = Number(q.get('pageIndex') || 1);
+        if (size > 50) return send(400, { message: 'pageSize: must be less than or equal to 50' });
+        const bound = projects.filter((p) => `demo-${p.org}` === q.get('organizationId') && p.repo);
+        return send(200, {
+          bindings: bound.slice((page - 1) * size, page * size).map((p) => ({ projectId: p.legacyId, devOpsPlatform: 'github', slug: p.repo, url: `https://github.com/${p.repo}` })),
+          page: { pageIndex: page, pageSize: size, total: bound.length },
+        });
       }
       if (u.pathname === '/api/settings/values') {
         const own = patterns[q.get('component')];
