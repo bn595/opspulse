@@ -8,12 +8,15 @@ const KEY_CHARS = /^[A-Za-z0-9_.:-]+$/;
 const PATTERN_SETTING = 'sonar.branch.longLivedBranches.regex';
 
 // New key = old key up to and including the first '_' (the organization part, which cannot itself
-// contain '_'), followed by the project's current name.
+// contain '_'), followed by the project's current name. A name that already starts with that prefix
+// (in any case; projects created by the scanner are named after their key) is not prefixed again.
 function deriveKey(key, name) {
   const cut = key.indexOf('_');
   if (cut < 1) return { to: null, status: 'unrecognized' };
-  const to = key.slice(0, cut + 1) + name;
-  if (!KEY_CHARS.test(name)) return { to, status: 'invalid' };
+  const prefix = key.slice(0, cut + 1);
+  const bare = name.toLowerCase().startsWith(prefix.toLowerCase()) ? name.slice(prefix.length) : name;
+  const to = prefix + bare;
+  if (!KEY_CHARS.test(bare)) return { to, status: 'invalid' };
   return { to, status: to === key ? 'unchanged' : 'change' };
 }
 

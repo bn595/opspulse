@@ -10,6 +10,8 @@ function seedProjects() {
   const renamed = { 'payments-api': 'payments-service', 'web-portal': 'portal', 'data-pipeline': 'data-platform', search: 'search-v2', billing: 'Legacy Billing', gateway: 'api-gateway', ledger: 'ledger-core' };
   const projects = repos.map((r) => ({ org: 'acme', key: `Acme-Corp_${r}`, name: renamed[r] || r }));
   projects.push({ org: 'acme', key: 'legacyreports', name: 'reports' });
+  // Created by the scanner, so named after the key; one of them was renamed since.
+  projects.push({ org: 'acme', key: 'Acme-Corp_events', name: 'Acme-Corp_events' }, { org: 'acme', key: 'Acme-Corp_jobs', name: 'Acme-Corp_job-runner' });
   projects.push(...['tools', 'sandbox', 'experiments'].map((r) => ({ org: 'acme-labs', key: `acme-labs_${r}`, name: r === 'sandbox' ? 'playground' : r })));
   return projects;
 }

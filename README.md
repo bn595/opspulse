@@ -394,7 +394,7 @@ The **Admin** view (side navigation, or `#/admin`) holds bulk tools for SonarQub
 | **Delete branch** | Deletes one branch from chosen projects. Main branches are never deleted. |
 | **Make branch long-lived** | Sets the pattern, then deletes the branch where it exists as short-lived, so its next analysis recreates it as long-lived. A branch's type is fixed at its first analysis, so this is the way to turn an existing branch long-lived. |
 
-**How a new key is derived.** Everything up to and including the first `_` of the current key is kept exactly (case included), followed by the project's current name: `Acme-Corp_payments-api`, renamed to `payments-service`, becomes `Acme-Corp_payments-service`. The preview flags keys without an `_`, names that aren't valid in a key, and target keys already taken anywhere in SonarQube Cloud.
+**How a new key is derived.** Everything up to and including the first `_` of the current key is kept exactly (case included), followed by the project's current name: `Acme-Corp_payments-api`, renamed to `payments-service`, becomes `Acme-Corp_payments-service`. A name that already starts with that prefix, in any case, isn't prefixed again: projects created by the scanner are named after their key, so `Acme-Corp_events` named `Acme-Corp_events` is not drift. The preview flags keys without an `_`, names that aren't valid in a key, and target keys already taken anywhere in SonarQube Cloud.
 
 **Choosing projects.** By name prefix (case-insensitive; empty means every project) or a pasted list of keys.
 

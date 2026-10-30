@@ -10,6 +10,15 @@ test('a new key keeps everything up to the first underscore, case and all, follo
   assert.deepEqual(brief(rows, 'to', 'status'), [['Acme-Corp_payments-api', 'Acme-Corp_payments-service', 'change']]);
 });
 
+test('a name that already carries the key prefix is not prefixed twice', () => {
+  const rows = plan.planKeys([{ key: 'Acme-Corp_old', name: 'Acme-Corp_new' }, { key: 'Acme-Corp_old2', name: 'acme-corp_new2' }]);
+  assert.deepEqual(brief(rows, 'to', 'status'), [['Acme-Corp_old', 'Acme-Corp_new', 'change'], ['Acme-Corp_old2', 'Acme-Corp_new2', 'change']]);
+});
+
+test('a project named after its own key (the scanner default) is not drift', () => {
+  assert.deepEqual(plan.findDrift([{ key: 'Acme-Corp_payments-api', name: 'Acme-Corp_payments-api' }]), []);
+});
+
 test('keys that already match their name are unchanged', () => {
   assert.deepEqual(brief(plan.planKeys([{ key: 'Acme_api', name: 'api' }]), 'status'), [['Acme_api', 'unchanged']]);
 });
